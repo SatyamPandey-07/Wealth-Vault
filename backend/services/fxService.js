@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import currencyService from './currencyService.js';
 import ledgerService from './ledgerService.js';
 import { logInfo, logError } from '../utils/logger.js';
+import eventBus from '../events/eventBus.js';
 
 /**
  * FX Revaluation Service (L3)
@@ -51,6 +52,15 @@ class FXService {
             const res = await this.revalueAccount(userId, account.id);
             results.push(res);
         }
+
+        // Emit aggregate balance signal after all accounts are revalued
+        const totalGainUSD = results.reduce((sum, r) => sum + (r.unrealizedFXGainUSD || 0), 0);
+        eventBus.emit('VAULT_BALANCE_UPDATED', {
+            userId,
+            balance: totalGainUSD,
+            currency: 'USD',
+            source: 'fx_revaluation',
+        });
 
         return results;
     }

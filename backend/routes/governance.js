@@ -7,15 +7,14 @@ import successionService from '../services/successionService.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { AppError } from '../utils/AppError.js';
 import db from '../config/db.js';
-import { assetStepUpLogs } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { assetStepUpLogs, marketAnomalyDefinitions, syntheticVaultMappings, hedgeExecutionHistory, vaults, autopilotWorkflows, workflowTriggers, workflowExecutionLogs } from '../db/schema.js';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import shieldService from '../services/shieldService.js';
 import riskEngine from '../services/riskEngine.js';
 import anomalyScanner from '../services/anomalyScanner.js';
 import hedgingOrchestrator from '../services/hedgingOrchestrator.js';
-import { marketAnomalyDefinitions, syntheticVaultMappings, hedgeExecutionHistory, vaults, executionWorkflows, workflowTriggers, workflowExecutionLogs } from '../db/schema.js';
-import { eq, and, desc, sql } from 'drizzle-orm';
 import workflowEngine from '../services/workflowEngine.js';
+import { signalAutopilot } from '../middleware/triggerInterceptor.js';
 
 const router = express.Router();
 
@@ -92,6 +91,8 @@ router.post('/approvals/:requestId/approve', protect, [
 ], asyncHandler(async (req, res) => {
     const { reason } = req.body;
     const approved = await governanceService.approveRequest(req.params.requestId, req.user.id, reason);
+    // Autopilot signal: quorum-based approval can unlock governance workflows
+    signalAutopilot(req, 'GOVERNANCE_QUORUM_REACHED', { resolutionId: req.params.requestId });
     new ApiResponse(200, approved, 'Request approved').send(res);
 }));
 
@@ -369,15 +370,16 @@ router.post('/workflows', protect, [
     body('priority').isInt().optional(),
 ], asyncHandler(async (req, res) => {
     const { name, entityType, triggerLogic, priority, metadata } = req.body;
-    const [workflow] = await db.insert(executionWorkflows).values({
+    const [workflow] = await db.insert(autopilotWorkflows).values({
         userId: req.user.id,
         name,
-        entityType,
+        domain: entityType || 'VAULT',
         triggerLogic: triggerLogic || 'AND',
         priority: priority || 1,
+        status: 'draft',
         metadata: metadata || {}
     }).returning();
-    new ApiResponse(201, workflow, 'Autonomous workflow created').send(res);
+    new ApiResponse(201, workflow, 'Autonomous workflow created — manage it at /api/autopilot/workflows').send(res);
 }));
 
 /**
@@ -417,10 +419,10 @@ router.get('/workflows/logs', protect, asyncHandler(async (req, res) => {
  * @desc    Manually trigger a workflow execution (Override)
  */
 router.post('/workflows/:workflowId/execute', protect, asyncHandler(async (req, res) => {
-    const [workflow] = await db.select().from(executionWorkflows).where(eq(executionWorkflows.id, req.params.workflowId));
+    const [workflow] = await db.select().from(autopilotWorkflows).where(eq(autopilotWorkflows.id, req.params.workflowId));
     if (!workflow || workflow.userId !== req.user.id) return res.status(404).json({ message: 'Workflow not found' });
 
-    await workflowEngine.executeWorkflowAction(workflow);
+    await workflowEngine.manualTrigger(workflow.id, req.user.id);
     new ApiResponse(200, null, 'Workflow execution triggered manually').send(res);
 }));
 

@@ -17,8 +17,9 @@ import { AppError } from "../utils/AppError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { liquidityGuard } from "../middleware/liquidityGuard.js";
 import { riskInterceptor } from "../middleware/riskInterceptor.js";
+import { signalAutopilot } from "../middleware/triggerInterceptor.js";
 
-// Side-effects like updateCategoryStats, monitorBudget, matchSubscription 
+// Side-effects like updateCategoryStats, monitorBudget, matchSubscription
 // are now handled by event listeners in ../listeners/
 
 const router = express.Router();
@@ -282,12 +283,15 @@ router.post(
       })
       .returning();
 
-    // Side effects are now handled asynchronously via the Event Bus
+    // Side effects: Event Bus for budget/subscription listeners
     eventBus.emit('EXPENSE_CREATED', {
       ...newExpense,
       splitDetails: req.body.splitDetails,
       paidById: req.body.paidById || req.user.id
     });
+
+    // Autopilot signal: feed expense total into workflow evaluation
+    signalAutopilot(req, 'EXPENSE_CREATED', { amount: parseFloat(amount), categoryId: category, vaultId: vaultId || null });
 
     const expenseWithCategory = await db.query.expenses.findFirst({
       where: eq(expenses.id, newExpense.id),

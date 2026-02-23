@@ -135,18 +135,17 @@ class TaxService {
       const totalGain = parseFloat(liabilitySummary[0]?.totalGain || '0');
       const estimatedLiability = totalGain * 0.20; // 20% estimated tax
 
-      // Threshold check: trigger if liability > $10,000
-      if (estimatedLiability > 10000) {
-        eventBus.emit('TAX_LIABILITY_THRESHOLD', {
-          userId,
-          variable: 'tax_liability',
-          value: estimatedLiability,
-          metadata: {
-            totalGain,
-            estimatedRate: 0.20
-          }
-        });
-      }
+      // Always emit — WorkflowEngine evaluators decide whether thresholds are breached
+      eventBus.emit('TAX_LIABILITY_THRESHOLD', {
+        userId,
+        value: estimatedLiability, // WorkflowEngine reads top-level `value`
+        variable: 'tax_liability',
+        metadata: {
+          totalGain,
+          estimatedRate: 0.20,
+          aboveThreshold: estimatedLiability > 10000,
+        }
+      });
 
       return estimatedLiability;
     } catch (error) {

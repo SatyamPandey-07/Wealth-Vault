@@ -15,6 +15,8 @@ import { debtArbitrageLogs, capitalCostSnapshots } from '../db/schema.js';
 import { body } from 'express-validator';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { signalAutopilot } from '../middleware/triggerInterceptor.js';
+import eventBus from '../events/eventBus.js';
 
 const router = express.Router();
 
@@ -53,6 +55,10 @@ router.post('/', protect, validateDebt, async (req, res) => {
         }).returning();
 
         res.success(newDebt, 'Debt added successfully', 201);
+        // Autopilot signal: high-APR debt can trigger workflows
+        signalAutopilot(req, 'DEBT_APR_CHANGE', { debtId: newDebt.id, value: parseFloat(req.body.apr) });
+        // Also broadcast for other listeners
+        eventBus.emit('DEBT_APR_CHANGE', { userId: req.user.id, debtId: newDebt.id, value: parseFloat(req.body.apr) });
     } catch (error) {
         res.error(error.message);
     }

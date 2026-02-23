@@ -1353,8 +1353,8 @@ export const goalsRelations = relations(goals, ({ one }) => ({
 // Ledger System Relations
 export const ledgerAccountsRelations = relations(ledgerAccounts, ({ one, many }) => ({
     user: one(users, { fields: [ledgerAccounts.userId], references: [users.id] }),
-    parentAccount: one(ledgerAccounts, { 
-        fields: [ledgerAccounts.parentAccountId], 
+    parentAccount: one(ledgerAccounts, {
+        fields: [ledgerAccounts.parentAccountId],
         references: [ledgerAccounts.id],
         relationName: 'account_hierarchy'
     }),
@@ -3622,307 +3622,444 @@ export const workflowExecutionLogsRelations = relations(workflowExecutionLogs, (
 export const taxNexusMappingsRelations = relations(taxNexusMappings, ({ one }) => ({
     user: one(users, { fields: [taxNexusMappings.userId], references: [users.id] }),
     entity: one(corporateEntities, { fields: [taxNexusMappings.entityId], references: [corporateEntities.id] }),
-// ============================================
-// GAMIFICATION TABLES
-// ============================================
+    // ============================================
+    // GAMIFICATION TABLES
+    // ============================================
 
-// Achievement Definitions Table (predefined achievements)
-export const achievementDefinitions = pgTable('achievement_definitions', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    code: text('code').notNull().unique(),
-    name: text('name').notNull(),
-    description: text('description'),
-    category: text('category').notNull(), // 'savings', 'budgeting', 'goals', 'streaks', 'challenges', 'education'
-    icon: text('icon'),
-    tier: text('tier').notNull().default('bronze'), // 'bronze', 'silver', 'gold', 'platinum', 'diamond'
-    pointsRequired: integer('points_required').default(0),
-    criteria: jsonb('criteria').notNull(), // { type: 'action_count'|'milestone'|'streak'|'score', value: number, metric: string }
-    rewardPoints: integer('reward_points').notNull().default(0),
-    rewardBadge: boolean('reward_badge').default(true),
-    isActive: boolean('is_active').default(true),
-    displayOrder: integer('display_order').default(0),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+    // Achievement Definitions Table (predefined achievements)
+    export const achievementDefinitions = pgTable('achievement_definitions', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        code: text('code').notNull().unique(),
+        name: text('name').notNull(),
+        description: text('description'),
+        category: text('category').notNull(), // 'savings', 'budgeting', 'goals', 'streaks', 'challenges', 'education'
+        icon: text('icon'),
+        tier: text('tier').notNull().default('bronze'), // 'bronze', 'silver', 'gold', 'platinum', 'diamond'
+        pointsRequired: integer('points_required').default(0),
+        criteria: jsonb('criteria').notNull(), // { type: 'action_count'|'milestone'|'streak'|'score', value: number, metric: string }
+        rewardPoints: integer('reward_points').notNull().default(0),
+        rewardBadge: boolean('reward_badge').default(true),
+        isActive: boolean('is_active').default(true),
+        displayOrder: integer('display_order').default(0),
+        createdAt: timestamp('created_at').defaultNow(),
+        updatedAt: timestamp('updated_at').defaultNow(),
+    });
 
-// User Achievements Table (tracks earned achievements)
-export const userAchievements = pgTable('user_achievements', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    achievementId: uuid('achievement_id').references(() => achievementDefinitions.id, { onDelete: 'cascade' }).notNull(),
-    earnedAt: timestamp('earned_at').defaultNow(),
-    progress: integer('progress').default(0),
-    isCompleted: boolean('is_completed').default(false),
-    completedAt: timestamp('completed_at'),
-    metadata: jsonb('metadata').default({}),
-});
+    // User Achievements Table (tracks earned achievements)
+    export const userAchievements = pgTable('user_achievements', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        achievementId: uuid('achievement_id').references(() => achievementDefinitions.id, { onDelete: 'cascade' }).notNull(),
+        earnedAt: timestamp('earned_at').defaultNow(),
+        progress: integer('progress').default(0),
+        isCompleted: boolean('is_completed').default(false),
+        completedAt: timestamp('completed_at'),
+        metadata: jsonb('metadata').default({}),
+    });
 
-// User Points System Table
-export const userPoints = pgTable('user_points', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    totalPoints: integer('total_points').notNull().default(0),
-    lifetimePoints: integer('lifetime_points').notNull().default(0),
-    currentLevel: integer('current_level').notNull().default(1),
-    totalBadges: integer('total_badges').notNull().default(0),
-    currentStreak: integer('current_streak').notNull().default(0),
-    longestStreak: integer('longest_streak').notNull().default(0),
-    lastActivityDate: timestamp('last_activity_date'),
-    weeklyPoints: integer('weekly_points').notNull().default(0),
-    monthlyPoints: integer('monthly_points').notNull().default(0),
-    pointsToNextLevel: integer('points_to_next_level').notNull().default(100),
-    levelProgress: integer('level_progress').notNull().default(0),
-    metadata: jsonb('metadata').default({}),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+    // User Points System Table
+    export const userPoints = pgTable('user_points', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        totalPoints: integer('total_points').notNull().default(0),
+        lifetimePoints: integer('lifetime_points').notNull().default(0),
+        currentLevel: integer('current_level').notNull().default(1),
+        totalBadges: integer('total_badges').notNull().default(0),
+        currentStreak: integer('current_streak').notNull().default(0),
+        longestStreak: integer('longest_streak').notNull().default(0),
+        lastActivityDate: timestamp('last_activity_date'),
+        weeklyPoints: integer('weekly_points').notNull().default(0),
+        monthlyPoints: integer('monthly_points').notNull().default(0),
+        pointsToNextLevel: integer('points_to_next_level').notNull().default(100),
+        levelProgress: integer('level_progress').notNull().default(0),
+        metadata: jsonb('metadata').default({}),
+        createdAt: timestamp('created_at').defaultNow(),
+        updatedAt: timestamp('updated_at').defaultNow(),
+    });
 
-// Points History Table (transaction log)
-export const pointsHistory = pgTable('points_history', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    points: integer('points').notNull(),
-    actionType: text('action_type').notNull(), // 'achievement_earned', 'challenge_completed', 'goal_reached', 'daily_login', etc.
-    description: text('description'),
-    referenceId: uuid('reference_id'), // Optional reference to related entity
-    createdAt: timestamp('created_at').defaultNow(),
-});
+    // Points History Table (transaction log)
+    export const pointsHistory = pgTable('points_history', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        points: integer('points').notNull(),
+        actionType: text('action_type').notNull(), // 'achievement_earned', 'challenge_completed', 'goal_reached', 'daily_login', etc.
+        description: text('description'),
+        referenceId: uuid('reference_id'), // Optional reference to related entity
+        createdAt: timestamp('created_at').defaultNow(),
+    });
 
-// User Streaks Table
-export const userStreaks = pgTable('user_streaks', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    streakType: text('streak_type').notNull(), // 'daily_login', 'budget_adherence', 'savings_contribution', 'expense_log'
-    currentCount: integer('current_count').notNull().default(0),
-    longestCount: integer('longest_count').notNull().default(0),
-    startDate: timestamp('start_date'),
-    lastActivityDate: timestamp('last_activity_date'),
-    isActive: boolean('is_active').default(true),
-    metadata: jsonb('metadata').default({}),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+    // User Streaks Table
+    export const userStreaks = pgTable('user_streaks', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        streakType: text('streak_type').notNull(), // 'daily_login', 'budget_adherence', 'savings_contribution', 'expense_log'
+        currentCount: integer('current_count').notNull().default(0),
+        longestCount: integer('longest_count').notNull().default(0),
+        startDate: timestamp('start_date'),
+        lastActivityDate: timestamp('last_activity_date'),
+        isActive: boolean('is_active').default(true),
+        metadata: jsonb('metadata').default({}),
+        createdAt: timestamp('created_at').defaultNow(),
+        updatedAt: timestamp('updated_at').defaultNow(),
+    });
 
-// Relations for Gamification Tables
-export const achievementDefinitionsRelations = relations(achievementDefinitions, ({ many }) => ({
-    userAchievements: many(userAchievements),
-}));
+    // Relations for Gamification Tables
+    export const achievementDefinitionsRelations = relations(achievementDefinitions, ({ many }) => ({
+        userAchievements: many(userAchievements),
+    }));
 
-export const userAchievementsRelations = relations(userAchievements, ({ one }) => ({
-    user: one(users, {
-        fields: [userAchievements.userId],
-        references: [users.id],
-    }),
-    achievement: one(achievementDefinitions, {
-        fields: [userAchievements.achievementId],
-        references: [achievementDefinitions.id],
-    }),
-}));
+    export const userAchievementsRelations = relations(userAchievements, ({ one }) => ({
+        user: one(users, {
+            fields: [userAchievements.userId],
+            references: [users.id],
+        }),
+        achievement: one(achievementDefinitions, {
+            fields: [userAchievements.achievementId],
+            references: [achievementDefinitions.id],
+        }),
+    }));
 
-export const userPointsRelations = relations(userPoints, ({ one }) => ({
-    user: one(users, {
-        fields: [userPoints.userId],
-        references: [users.id],
-    }),
-}));
+    export const userPointsRelations = relations(userPoints, ({ one }) => ({
+        user: one(users, {
+            fields: [userPoints.userId],
+            references: [users.id],
+        }),
+    }));
 
-export const pointsHistoryRelations = relations(pointsHistory, ({ one }) => ({
-    user: one(users, {
-        fields: [pointsHistory.userId],
-        references: [users.id],
-    }),
-}));
+    export const pointsHistoryRelations = relations(pointsHistory, ({ one }) => ({
+        user: one(users, {
+            fields: [pointsHistory.userId],
+            references: [users.id],
+        }),
+    }));
 
-export const userStreaksRelations = relations(userStreaks, ({ one }) => ({
-    user: one(users, {
-        fields: [userStreaks.userId],
-        references: [users.id],
-    }),
-}));
+    export const userStreaksRelations = relations(userStreaks, ({ one }) => ({
+        user: one(users, {
+            fields: [userStreaks.userId],
+            references: [users.id],
+        }),
+    }));
 
-// ============================================
-// INVESTMENT PORTFOLIO ANALYZER TABLES
-// ============================================
+    // ============================================
+    // INVESTMENT PORTFOLIO ANALYZER TABLES
+    // ============================================
 
-// Investment Risk Profiles Table
-export const investmentRiskProfiles = pgTable('investment_risk_profiles', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    
-    // Risk Assessment Answers
-    riskScore: integer('risk_score').notNull().default(50),
-    riskTolerance: text('risk_tolerance').notNull().default('moderate'), // conservative, moderate, aggressive
-    investmentHorizon: text('investment_horizon').notNull().default('medium'), // short, medium, long
-    investmentExperience: text('investment_experience').notNull().default('intermediate'), // beginner, intermediate, advanced
-    
-    // Financial Profile
-    annualIncome: numeric('annual_income', { precision: 15, scale: 2 }).default('0'),
-    netWorth: numeric('net_worth', { precision: 15, scale: 2 }).default('0'),
-    liquidAssets: numeric('liquid_assets', { precision: 15, scale: 2 }).default('0'),
-    emergencyFundMonths: integer('emergency_fund_months').default(3),
-    
-    // Investment Goals
-    primaryGoal: text('primary_goal').notNull().default('growth'), // growth, income, preservation, balanced
-    retirementAge: integer('retirement_age'),
-    targetRetirementAmount: numeric('target_retirement_amount', { precision: 15, scale: 2 }),
-    monthlyInvestmentCapacity: numeric('monthly_investment_capacity', { precision: 12, scale: 2 }).default('0'),
-    
-    // Risk Factors
-    hasDebt: boolean('has_debt').default(false),
-    debtAmount: numeric('debt_amount', { precision: 15, scale: 2 }).default('0'),
-    hasDependents: boolean('has_dependents').default(false),
-    dependentCount: integer('dependent_count').default(0),
-    hasOtherIncome: boolean('has_other_income').default(false),
-    otherIncomeMonthly: numeric('other_income_monthly', { precision: 12, scale: 2 }).default('0'),
-    
-    // Market Understanding
-    understandsMarketVolatility: boolean('understands_market_volatility').default(false),
-    canAffordLosses: boolean('can_afford_losses').default(false),
-    maxLossTolerance: numeric('max_loss_tolerance', { precision: 12, scale: 2 }).default('0'),
-    
-    // Assessment Details
-    assessmentDate: timestamp('assessment_date').defaultNow(),
-    lastUpdated: timestamp('last_updated').defaultNow(),
-    isActive: boolean('is_active').default(true),
-    
-    // Metadata
-    metadata: jsonb('metadata').default({}),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+    // Investment Risk Profiles Table
+    export const investmentRiskProfiles = pgTable('investment_risk_profiles', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
 
-// Investment Recommendations Table
-export const investmentRecommendations = pgTable('investment_recommendations', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
-    
-    // Recommendation Details
-    recommendationType: text('recommendation_type').notNull(), // buy, sell, hold, diversify, rebalance
-    assetSymbol: text('asset_symbol'),
-    assetName: text('asset_name'),
-    assetType: text('asset_type'), // stock, etf, mutual_fund, bond, crypto
-    
-    // Reasoning
-    reasoning: text('reasoning').notNull(),
-    reasoningFactors: jsonb('reasoning_factors').default([]),
-    
-    // Metrics
-    expectedReturn: numeric('expected_return', { precision: 8, scale: 4 }),
-    riskLevel: text('risk_level').notNull(), // low, medium, high
-    confidenceScore: numeric('confidence_score', { precision: 5, scale: 2 }), // 0-100
-    timeHorizon: text('time_horizon'), // short, medium, long
-    
-    // Priority and Status
-    priority: text('priority').default('medium'), // low, medium, high
-    status: text('status').default('active'), // active, dismissed, implemented
-    expiresAt: timestamp('expires_at'),
-    
-    // Financial Impact
-    suggestedAmount: numeric('suggested_amount', { precision: 15, scale: 2 }),
-    potentialGainLoss: numeric('potential_gain_loss', { precision: 15, scale: 2 }),
-    
-    // AI Metadata
-    modelVersion: text('model_version'),
-    analysisData: jsonb('analysis_data').default({}),
-    
-    isRead: boolean('is_read').default(false),
-    readAt: timestamp('read_at'),
-    
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+        // Risk Assessment Answers
+        riskScore: integer('risk_score').notNull().default(50),
+        riskTolerance: text('risk_tolerance').notNull().default('moderate'), // conservative, moderate, aggressive
+        investmentHorizon: text('investment_horizon').notNull().default('medium'), // short, medium, long
+        investmentExperience: text('investment_experience').notNull().default('intermediate'), // beginner, intermediate, advanced
 
-// Portfolio Rebalancing History Table
-export const portfolioRebalancing = pgTable('portfolio_rebalancing', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
-    
-    // Rebalancing Details
-    rebalanceType: text('rebalance_type').notNull(), // automatic, suggested, manual
-    triggerReason: text('trigger_reason'), // threshold_exceeded, time_based, optimization, manual
-    
-    // Before State
-    beforeAllocation: jsonb('before_allocation').notNull(),
-    beforeValue: numeric('before_value', { precision: 15, scale: 2 }).notNull(),
-    
-    // After State
-    afterAllocation: jsonb('after_allocation'),
-    afterValue: numeric('after_value', { precision: 15, scale: 2 }),
-    
-    // Actions Taken
-    actions: jsonb('actions').default([]),
-    
-    // Status
-    status: text('status').default('pending'), // pending, completed, cancelled
-    completedAt: timestamp('completed_at'),
-    
-    // Metrics
-    expectedImprovement: numeric('expected_improvement', { precision: 8, scale: 4 }),
-    actualImprovement: numeric('actual_improvement', { precision: 8, scale: 4 }),
-    
-    notes: text('notes'),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+        // Financial Profile
+        annualIncome: numeric('annual_income', { precision: 15, scale: 2 }).default('0'),
+        netWorth: numeric('net_worth', { precision: 15, scale: 2 }).default('0'),
+        liquidAssets: numeric('liquid_assets', { precision: 15, scale: 2 }).default('0'),
+        emergencyFundMonths: integer('emergency_fund_months').default(3),
 
-// Relations for Investment Portfolio Analyzer Tables
-export const investmentRiskProfilesRelations = relations(investmentRiskProfiles, ({ one, many }) => ({
-    user: one(users, {
-        fields: [investmentRiskProfiles.userId],
-        references: [users.id],
-    }),
-}));
+        // Investment Goals
+        primaryGoal: text('primary_goal').notNull().default('growth'), // growth, income, preservation, balanced
+        retirementAge: integer('retirement_age'),
+        targetRetirementAmount: numeric('target_retirement_amount', { precision: 15, scale: 2 }),
+        monthlyInvestmentCapacity: numeric('monthly_investment_capacity', { precision: 12, scale: 2 }).default('0'),
 
-export const investmentRecommendationsRelations = relations(investmentRecommendations, ({ one }) => ({
-    user: one(users, {
-        fields: [investmentRecommendations.userId],
-        references: [users.id],
-    }),
-    portfolio: one(portfolios, {
-        fields: [investmentRecommendations.portfolioId],
-        references: [portfolios.id],
-    }),
-}));
+        // Risk Factors
+        hasDebt: boolean('has_debt').default(false),
+        debtAmount: numeric('debt_amount', { precision: 15, scale: 2 }).default('0'),
+        hasDependents: boolean('has_dependents').default(false),
+        dependentCount: integer('dependent_count').default(0),
+        hasOtherIncome: boolean('has_other_income').default(false),
+        otherIncomeMonthly: numeric('other_income_monthly', { precision: 12, scale: 2 }).default('0'),
 
-export const portfolioRebalancingRelations = relations(portfolioRebalancing, ({ one }) => ({
-    user: one(users, {
-        fields: [portfolioRebalancing.userId],
-        references: [users.id],
-    }),
-    portfolio: one(portfolios, {
-        fields: [portfolioRebalancing.portfolioId],
-        references: [portfolios.id],
-    }),
-}));
+        // Market Understanding
+        understandsMarketVolatility: boolean('understands_market_volatility').default(false),
+        canAffordLosses: boolean('can_afford_losses').default(false),
+        maxLossTolerance: numeric('max_loss_tolerance', { precision: 12, scale: 2 }).default('0'),
 
-// Update users relations to include new tables
-export const usersRelations = relations(users, ({ many }) => ({
-    categories: many(categories),
-    expenses: many(expenses),
-    goals: many(goals),
-    deviceSessions: many(deviceSessions),
-    vaultMemberships: many(vaultMembers),
-    ownedVaults: many(vaults),
-    securityEvents: many(securityEvents),
-    reports: many(reports),
-    budgetAlerts: many(budgetAlerts),
-    portfolios: many(portfolios),
-    subscriptions: many(subscriptions),
-    bills: many(bills),
-    debts: many(debts),
-    debtPayments: many(debtPayments),
-    expenseShares: many(expenseShares),
-    sentReimbursements: many(reimbursements, { relationName: 'reimbursements_from' }),
-    receivedReimbursements: many(reimbursements, { relationName: 'reimbursements_to' }),
-    bankAccounts: many(bankAccounts),
-    bankTransactions: many(bankTransactions),
-    emergencyFundGoals: many(emergencyFundGoals),
-    creditScores: many(creditScores),
-    creditScoreAlerts: many(creditScoreAlerts),
-    billNegotiations: many(billNegotiation),
-    negotiationAttempts: many(negotiationAttempts),
-    investmentRiskProfiles: many(investmentRiskProfiles),
-    investmentRecommendations: many(investmentRecommendations),
-}));
+        // Assessment Details
+        assessmentDate: timestamp('assessment_date').defaultNow(),
+        lastUpdated: timestamp('last_updated').defaultNow(),
+        isActive: boolean('is_active').default(true),
+
+        // Metadata
+        metadata: jsonb('metadata').default({}),
+        createdAt: timestamp('created_at').defaultNow(),
+        updatedAt: timestamp('updated_at').defaultNow(),
+    });
+
+    // Investment Recommendations Table
+    export const investmentRecommendations = pgTable('investment_recommendations', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
+
+        // Recommendation Details
+        recommendationType: text('recommendation_type').notNull(), // buy, sell, hold, diversify, rebalance
+        assetSymbol: text('asset_symbol'),
+        assetName: text('asset_name'),
+        assetType: text('asset_type'), // stock, etf, mutual_fund, bond, crypto
+
+        // Reasoning
+        reasoning: text('reasoning').notNull(),
+        reasoningFactors: jsonb('reasoning_factors').default([]),
+
+        // Metrics
+        expectedReturn: numeric('expected_return', { precision: 8, scale: 4 }),
+        riskLevel: text('risk_level').notNull(), // low, medium, high
+        confidenceScore: numeric('confidence_score', { precision: 5, scale: 2 }), // 0-100
+        timeHorizon: text('time_horizon'), // short, medium, long
+
+        // Priority and Status
+        priority: text('priority').default('medium'), // low, medium, high
+        status: text('status').default('active'), // active, dismissed, implemented
+        expiresAt: timestamp('expires_at'),
+
+        // Financial Impact
+        suggestedAmount: numeric('suggested_amount', { precision: 15, scale: 2 }),
+        potentialGainLoss: numeric('potential_gain_loss', { precision: 15, scale: 2 }),
+
+        // AI Metadata
+        modelVersion: text('model_version'),
+        analysisData: jsonb('analysis_data').default({}),
+
+        isRead: boolean('is_read').default(false),
+        readAt: timestamp('read_at'),
+
+        createdAt: timestamp('created_at').defaultNow(),
+        updatedAt: timestamp('updated_at').defaultNow(),
+    });
+
+    // Portfolio Rebalancing History Table
+    export const portfolioRebalancing = pgTable('portfolio_rebalancing', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+
+        // Rebalancing Details
+        rebalanceType: text('rebalance_type').notNull(), // automatic, suggested, manual
+        triggerReason: text('trigger_reason'), // threshold_exceeded, time_based, optimization, manual
+
+        // Before State
+        beforeAllocation: jsonb('before_allocation').notNull(),
+        beforeValue: numeric('before_value', { precision: 15, scale: 2 }).notNull(),
+
+        // After State
+        afterAllocation: jsonb('after_allocation'),
+        afterValue: numeric('after_value', { precision: 15, scale: 2 }),
+
+        // Actions Taken
+        actions: jsonb('actions').default([]),
+
+        // Status
+        status: text('status').default('pending'), // pending, completed, cancelled
+        completedAt: timestamp('completed_at'),
+
+        // Metrics
+        expectedImprovement: numeric('expected_improvement', { precision: 8, scale: 4 }),
+        actualImprovement: numeric('actual_improvement', { precision: 8, scale: 4 }),
+
+        notes: text('notes'),
+        createdAt: timestamp('created_at').defaultNow(),
+        updatedAt: timestamp('updated_at').defaultNow(),
+    });
+
+    // Relations for Investment Portfolio Analyzer Tables
+    export const investmentRiskProfilesRelations = relations(investmentRiskProfiles, ({ one, many }) => ({
+        user: one(users, {
+            fields: [investmentRiskProfiles.userId],
+            references: [users.id],
+        }),
+    }));
+
+    export const investmentRecommendationsRelations = relations(investmentRecommendations, ({ one }) => ({
+        user: one(users, {
+            fields: [investmentRecommendations.userId],
+            references: [users.id],
+        }),
+        portfolio: one(portfolios, {
+            fields: [investmentRecommendations.portfolioId],
+            references: [portfolios.id],
+        }),
+    }));
+
+    export const portfolioRebalancingRelations = relations(portfolioRebalancing, ({ one }) => ({
+        user: one(users, {
+            fields: [portfolioRebalancing.userId],
+            references: [users.id],
+        }),
+        portfolio: one(portfolios, {
+            fields: [portfolioRebalancing.portfolioId],
+            references: [portfolios.id],
+        }),
+    }));
+
+    // Update users relations to include new tables
+    export const usersRelations = relations(users, ({ many }) => ({
+        categories: many(categories),
+        expenses: many(expenses),
+        goals: many(goals),
+        deviceSessions: many(deviceSessions),
+        vaultMemberships: many(vaultMembers),
+        ownedVaults: many(vaults),
+        securityEvents: many(securityEvents),
+        reports: many(reports),
+        budgetAlerts: many(budgetAlerts),
+        portfolios: many(portfolios),
+        subscriptions: many(subscriptions),
+        bills: many(bills),
+        debts: many(debts),
+        debtPayments: many(debtPayments),
+        expenseShares: many(expenseShares),
+        sentReimbursements: many(reimbursements, { relationName: 'reimbursements_from' }),
+        receivedReimbursements: many(reimbursements, { relationName: 'reimbursements_to' }),
+        bankAccounts: many(bankAccounts),
+        bankTransactions: many(bankTransactions),
+        emergencyFundGoals: many(emergencyFundGoals),
+        creditScores: many(creditScores),
+        creditScoreAlerts: many(creditScoreAlerts),
+        billNegotiations: many(billNegotiation),
+        negotiationAttempts: many(negotiationAttempts),
+        investmentRiskProfiles: many(investmentRiskProfiles),
+        investmentRecommendations: many(investmentRecommendations),
+        autopilotWorkflows: many(autopilotWorkflows),
+        workflowExecutionLogs: many(workflowExecutionLogs),
+    }));
+
+    // ============================================================================
+    // AUTONOMOUS "FINANCIAL AUTOPILOT" & EVENT-DRIVEN WORKFLOW ORCHESTRATOR (#461)
+    // ============================================================================
+
+    /**
+     * Autopilot Workflows - User-defined state machines for autonomous money management.
+     * Each workflow has conditions (triggers) and a set of sequential actions to execute.
+     */
+    export const autopilotWorkflows = pgTable('autopilot_workflows', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        name: text('name').notNull(),
+        description: text('description'),
+        // 'active', 'paused', 'draft', 'archived'
+        status: text('status').default('draft').notNull(),
+        // 'AND' = all triggers must fire, 'OR' = any trigger fires
+        triggerLogic: text('trigger_logic').default('AND').notNull(),
+        // The entity domain this workflow primarily operates on
+        // 'VAULT', 'EXPENSE', 'INVESTMENT', 'DEBT', 'GOVERNANCE', 'MACRO'
+        domain: text('domain').notNull(),
+        // Execution priority (higher = runs first when multiple workflows fire at once)
+        priority: integer('priority').default(0),
+        // Cooldown period in minutes to prevent rapid re-execution
+        cooldownMinutes: integer('cooldown_minutes').default(60),
+        lastExecutedAt: timestamp('last_executed_at'),
+        executionCount: integer('execution_count').default(0),
+        // Optional: max number of times this workflow can auto-execute
+        maxExecutions: integer('max_executions'),
+        // DSL definition for complex compound conditions (stored as structured JSON)
+        dslDefinition: jsonb('dsl_definition').default({}),
+        metadata: jsonb('metadata').default({}),
+        createdAt: timestamp('created_at').defaultNow(),
+        updatedAt: timestamp('updated_at').defaultNow(),
+    }, (table) => ({
+        userIdx: index('idx_autopilot_user').on(table.userId),
+        statusIdx: index('idx_autopilot_status').on(table.status),
+        domainIdx: index('idx_autopilot_domain').on(table.domain),
+    }));
+
+    /**
+     * Workflow Triggers - Condition definitions that "watch" financial variables.
+     * Each trigger monitors a specific metric and evaluates a comparison expression.
+     */
+    export const workflowTriggers = pgTable('workflow_triggers', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        // The financial variable to monitor:
+        // 'cash_reserve', 'portfolio_volatility', 'debt_apr', 'tax_liability',
+        // 'vault_balance', 'expense_total', 'macro_vix', 'governance_quorum'
+        variable: text('variable').notNull(),
+        // Comparison operator: '>', '<', '>=', '<=', '=='
+        operator: text('operator').notNull(),
+        // The threshold value to compare against
+        thresholdValue: numeric('threshold_value', { precision: 24, scale: 8 }).notNull(),
+        // Optional: scope the trigger to a specific vault or entity
+        scopeVaultId: uuid('scope_vault_id').references(() => vaults.id, { onDelete: 'set null' }),
+        // Whether this trigger condition is currently satisfied
+        currentStatus: boolean('current_status').default(false),
+        lastCheckedAt: timestamp('last_checked_at').defaultNow(),
+        lastValueObserved: numeric('last_value_observed', { precision: 24, scale: 8 }),
+        createdAt: timestamp('created_at').defaultNow(),
+    }, (table) => ({
+        workflowIdx: index('idx_trigger_workflow').on(table.workflowId),
+        userIdx: index('idx_trigger_user').on(table.userId),
+        variableIdx: index('idx_trigger_variable').on(table.variable),
+    }));
+
+    /**
+     * Workflow Actions - The ordered steps to execute when a workflow fires.
+     * Actions run sequentially (by stepOrder) and support rollback on failure.
+     */
+    export const workflowActions = pgTable('workflow_actions', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+        // Step ordering (1, 2, 3...)
+        stepOrder: integer('step_order').notNull(),
+        // Action type: 'SWEEP_VAULT', 'REBALANCE', 'HARVEST_LOSSES', 'ALERT',
+        //              'GOVERNANCE_VOTE', 'DEBT_PAYOFF', 'EXPENSE_CAP', 'FX_SWAP'
+        actionType: text('action_type').notNull(),
+        // Parameters for the action (e.g., { fromVaultId, toVaultId, percentage })
+        parameters: jsonb('parameters').default({}),
+        // Whether to abort the entire workflow if this step fails
+        abortOnFailure: boolean('abort_on_failure').default(true),
+        // 'pending', 'success', 'failed', 'skipped', 'rolled_back'
+        lastRunStatus: text('last_run_status').default('pending'),
+        createdAt: timestamp('created_at').defaultNow(),
+    }, (table) => ({
+        workflowStepIdx: index('idx_action_workflow_step').on(table.workflowId, table.stepOrder),
+    }));
+
+    /**
+     * Workflow Execution Logs - Immutable audit trail of every autopilot run.
+     */
+    export const workflowExecutionLogs = pgTable('workflow_execution_logs', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+        // Which event fired this execution
+        triggerEvent: text('trigger_event'),
+        // 'success', 'partial', 'failed', 'skipped_cooldown', 'skipped_max_executions'
+        resultStatus: text('result_status').notNull(),
+        // Snapshot of trigger values at time of execution
+        triggerSnapshot: jsonb('trigger_snapshot').default({}),
+        // Results of each action step
+        actionResults: jsonb('action_results').default([]),
+        // Human-readable description of what happened
+        summary: text('summary'),
+        executedAt: timestamp('executed_at').defaultNow(),
+        durationMs: integer('duration_ms'),
+    });
+
+    // Relations for autopilot tables
+    export const autopilotWorkflowsRelations = relations(autopilotWorkflows, ({ one, many }) => ({
+        user: one(users, { fields: [autopilotWorkflows.userId], references: [users.id] }),
+        triggers: many(workflowTriggers),
+        actions: many(workflowActions),
+        executionLogs: many(workflowExecutionLogs),
+    }));
+
+    export const workflowTriggersRelations = relations(workflowTriggers, ({ one }) => ({
+        workflow: one(autopilotWorkflows, { fields: [workflowTriggers.workflowId], references: [autopilotWorkflows.id] }),
+        user: one(users, { fields: [workflowTriggers.userId], references: [users.id] }),
+        vault: one(vaults, { fields: [workflowTriggers.scopeVaultId], references: [vaults.id] }),
+    }));
+
+    export const workflowActionsRelations = relations(workflowActions, ({ one }) => ({
+        workflow: one(autopilotWorkflows, { fields: [workflowActions.workflowId], references: [autopilotWorkflows.id] }),
+    }));
+
+    export const workflowExecutionLogsRelations = relations(workflowExecutionLogs, ({ one }) => ({
+        user: one(users, { fields: [workflowExecutionLogs.userId], references: [users.id] }),
+        workflow: one(autopilotWorkflows, { fields: [workflowExecutionLogs.workflowId], references: [autopilotWorkflows.id] }),
+    }));
