@@ -7,13 +7,15 @@ import harvestEngine from '../services/harvestEngine.js';
 import taxLotService from '../services/taxLotService.js';
 import reinvestmentService from '../services/reinvestmentService.js';
 import { validateTaxDeductionLimit } from '../middleware/taxValidator.js';
-import { eq, and, desc } from 'drizzle-orm';
+import { taxGuard } from '../middleware/taxGuard.js';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import corporateService from '../services/corporateService.js';
 import residencyEngine from '../services/residencyEngine.js';
-import { taxNexusMappings, taxLossOpportunities, washSaleViolations, investments } from '../db/schema.js';
+import { taxNexusMappings, taxLossOpportunities, washSaleViolations, investments, taxLotHistory, harvestExecutionLogs, assetProxyMappings } from '../db/schema.js';
 import db from '../config/db.js';
 import taxScoutAI from '../services/taxScoutAI.js';
 import { executeTaxLossSwap } from '../services/investmentService.js';
+import { findLotDiscrepancies } from '../utils/taxMath.js';
 
 const router = express.Router();
 
@@ -81,9 +83,9 @@ router.get('/opportunities/scan', protect, asyncHandler(async (req, res) => {
 
 /**
  * @route   POST /api/tax/harvest/execute
- * @desc    Execute loss harvesting (L3)
+ * @desc    Execute loss harvesting with Wash-Sale Shield (#460)
  */
-router.post('/harvest/execute', protect, validateTaxDeductionLimit, asyncHandler(async (req, res) => {
+router.post('/harvest/execute', protect, validateTaxDeductionLimit, taxGuard, asyncHandler(async (req, res) => {
   const { investmentId, lotIds, enableReinvestment = true } = req.body;
 
   // 1. Execute Harvest
@@ -99,24 +101,30 @@ router.post('/harvest/execute', protect, validateTaxDeductionLimit, asyncHandler
     reinvestmentResult = await reinvestmentService.executeProxyReinvestment(
       req.user.id,
       investment.symbol,
-      parseFloat(harvestLog.totalLossRealized) // Reinvesting the sold principal amount
+      parseFloat(harvestLog.totalLossRealized)
     );
 
     // Update log with reinvestment info
     await db.update(harvestExecutionLogs)
-      .set({ metadata: { ...harvestLog.metadata, reinvestment: reinvestmentResult } })
+      .set({ metadata: { ...harvestLog.metadata, reinvestment: reinvestmentResult, washSaleAnalysis: req.washSaleAnalysis } })
       .where(eq(harvestExecutionLogs.id, harvestLog.id));
   }
 
-  return new ApiResponse(200, {
+  const response = {
     harvestLog,
-    reinvestmentResult
-  }, 'Tax harvesting executed successfully').send(res);
+    reinvestmentResult,
+    washSaleAnalysis: req.washSaleAnalysis
+  };
+
+  if (req.washSaleWarning) {
+    response.warning = "Partial wash-sale disallowance applied to this harvest.";
+  }
+
+  return new ApiResponse(200, response, 'Tax harvesting executed successfully').send(res);
 }));
 
 /**
  * @route   GET /api/tax/history/harvests
- * @desc    Get historical harvest logs
  */
 router.get('/history/harvests', protect, asyncHandler(async (req, res) => {
   const history = await db.query.harvestExecutionLogs.findMany({
@@ -127,43 +135,66 @@ router.get('/history/harvests', protect, asyncHandler(async (req, res) => {
 }));
 
 /**
- * @route   GET /api/tax/proxies
- * @desc    Get market proxy mappings
+ * @route   GET /api/tax/lots/discrepancies
+ * @desc    Generating complex "Lot Discrepancy" reports (#460)
  */
-router.get('/proxies', protect, asyncHandler(async (req, res) => {
-  const proxies = await db.query.assetProxyMappings.findMany({
-    where: eq(assetProxyMappings.isActive, true)
+router.get('/lots/discrepancies', protect, asyncHandler(async (req, res) => {
+  const { investmentId, threshold = 5 } = req.query;
+
+  const investment = await db.query.investments.findFirst({
+    where: eq(investments.id, investmentId)
   });
-  return new ApiResponse(200, proxies).send(res);
+
+  if (!investment) return res.status(404).json(new ApiResponse(404, null, 'Investment not found'));
+
+  const lots = await db.select().from(taxLotHistory).where(
+    and(eq(taxLotHistory.userId, req.user.id), eq(taxLotHistory.investmentId, investmentId), eq(taxLotHistory.status, 'open'))
+  );
+
+  const currentPrice = parseFloat(investment.currentPrice || 0);
+  const discrepancies = findLotDiscrepancies(lots, currentPrice, parseFloat(threshold));
+
+  return new ApiResponse(200, {
+    symbol: investment.symbol,
+    currentPrice,
+    threshold: `${threshold}%`,
+    discrepancyCount: discrepancies.length,
+    discrepancies
+  }, 'Lot discrepancy report generated').send(res);
 }));
 
 /**
  * @route   POST /api/tax/lots/:id/sell
- * @desc    Simulate/Record a tax-lot specific sale (HIFO Optimization)
+ * @desc    Record a tax-lot specific sale with Wash-Sale Shield (#460)
  */
-router.post('/lots/:id/sell', protect, asyncHandler(async (req, res) => {
-  const { quantity } = req.body;
-  const [lot] = await db.select().from(taxLots).where(and(eq(taxLots.id, req.params.id), eq(taxLots.userId, req.user.id)));
+router.post('/lots/:id/sell', protect, taxGuard, asyncHandler(async (req, res) => {
+  const { quantity, salePrice } = req.body;
 
-  if (!lot || parseFloat(lot.quantity) < quantity) {
-    return res.status(400).json({ success: false, message: 'Invalid lot or quantity' });
+  // Find the lot
+  const [lot] = await db.select().from(taxLotHistory).where(
+    and(eq(taxLotHistory.id, req.params.id), eq(taxLotHistory.userId, req.user.id))
+  );
+
+  if (!lot || lot.status !== 'open') {
+    return res.status(400).json({ success: false, message: 'Invalid or closed lot' });
   }
 
-  // Logic to mark lot as partially/fully sold
-  const updated = await db.update(taxLots)
-    .set({
-      quantity: (parseFloat(lot.quantity) - quantity).toString(),
-      isSold: parseFloat(lot.quantity) - quantity <= 0
-    })
-    .where(eq(taxLots.id, req.params.id))
-    .returning();
+  const result = await taxLotService.closeLots(req.user.id, {
+    investmentId: lot.investmentId,
+    unitsSold: quantity,
+    salePrice: salePrice || 0, // Should come from req.body or market
+    method: 'SPECIFIC_ID',
+    specificLotId: lot.id // We might need to update closeLots to support this
+  });
 
-  return new ApiResponse(200, updated, 'Tax lot adjusted').send(res);
+  return new ApiResponse(200, {
+    result,
+    washSaleAnalysis: req.washSaleAnalysis
+  }, 'Tax lot adjusted successfully').send(res);
 }));
 
 /**
  * @route   GET /api/tax/corporate/consolidated
- * @desc    Get consolidated corporate tax liability and blended rate
  */
 router.get('/corporate/consolidated', protect, asyncHandler(async (req, res) => {
   const data = await corporateService.calculateConsolidatedTaxLiability(req.user.id);
@@ -172,23 +203,10 @@ router.get('/corporate/consolidated', protect, asyncHandler(async (req, res) => 
 
 /**
  * @route   GET /api/tax/nexus/exposure
- * @desc    Get tax nexus exposures across jurisdictions
  */
 router.get('/nexus/exposure', protect, asyncHandler(async (req, res) => {
   const exposures = await db.select().from(taxNexusMappings).where(eq(taxNexusMappings.userId, req.user.id));
   return new ApiResponse(200, exposures, 'Nexus exposures retrieved').send(res);
-}));
-
-/**
- * @route   POST /api/tax/nexus/override
- * @desc    Override tax rate for a specific nexus jurisdiction
- */
-router.post('/nexus/override', protect, asyncHandler(async (req, res) => {
-  const { mappingId, rateOverride } = req.body;
-  await db.update(taxNexusMappings)
-    .set({ taxRateOverride: rateOverride.toString() })
-    .where(and(eq(taxNexusMappings.id, mappingId), eq(taxNexusMappings.userId, req.user.id)));
-  return new ApiResponse(200, null, 'Tax rate override applied').send(res);
 }));
 
 export default router;

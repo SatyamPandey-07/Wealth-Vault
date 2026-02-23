@@ -19,6 +19,10 @@ import { liquidityGuard } from "../middleware/liquidityGuard.js";
 import { riskInterceptor } from "../middleware/riskInterceptor.js";
 import { signalAutopilot } from "../middleware/triggerInterceptor.js";
 import { enforceInstitutionalGovernance } from "../middleware/govGuard.js";
+import fxEngine from "../services/fxEngine.js";
+import taxLotService from "../services/taxLotService.js";
+import currencyService from "../services/currencyService.js";
+import { logInfo, logWarn } from "../utils/logger.js";
 
 // Side-effects like updateCategoryStats, monitorBudget, matchSubscription
 // are now handled by event listeners in ../listeners/
@@ -285,7 +289,24 @@ router.post(
       })
       .returning();
 
-    // Side effects: Event Bus for budget/subscription listeners
+    // ─── Feature #460: Tax-Lot Disposal ───
+    try {
+      const currencyToClose = currency || 'USD';
+      const inv = await fxEngine.getOrCreateCurrencyInvestment(req.user.id, currencyToClose, vaultId);
+      const usdRate = await currencyService.getExchangeRate(currencyToClose, 'USD');
+
+      await taxLotService.closeLots(req.user.id, {
+        investmentId: inv.id,
+        unitsSold: amount,
+        salePrice: usdRate,
+        method: 'HIFO' // Default to HIFO for tax optimization
+      });
+      logInfo(`[Expenses] Closed currency lots for ${amount} ${currencyToClose}`);
+    } catch (lotError) {
+      logWarn(`[Expenses] Tax-lot closure failed (non-blocking): ${lotError.message}`);
+    }
+
+    // Side effects are now handled asynchronously via the Event Bus
     eventBus.emit('EXPENSE_CREATED', {
       ...newExpense,
       splitDetails: req.body.splitDetails,
