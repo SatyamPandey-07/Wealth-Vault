@@ -1380,6 +1380,11 @@ export const usersRelations = relations(users, ({ many, one }) => ({
     liquidityPools: many(liquidityPools),
     internalClearingLogs: many(internalClearingLogs),
     fxSettlementInstructions: many(fxSettlementInstructions),
+    simulationScenarios: many(simulationScenarios),
+    simulationResults: many(simulationResults),
+    shadowEntities: many(shadowEntities),
+    governanceResolutions: many(governanceResolutions),
+    votingRecords: many(votingRecords),
 }));
 
 export const targetAllocationsRelations = relations(targetAllocations, ({ one }) => ({
@@ -1944,6 +1949,36 @@ export const currencyHedgingPositions = pgTable('currency_hedging_positions', {
 }));
 
 // ============================================================================
+// PREDICTIVE "FINANCIAL BUTTERFLY" MONTE CARLO ENGINE (#454)
+// ============================================================================
+
+export const simulationScenarios = pgTable('simulation_scenarios', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    baseYearlyGrowth: numeric('base_yearly_growth', { precision: 5, scale: 2 }).default('7.00'),
+    marketVolatility: numeric('market_volatility', { precision: 5, scale: 2 }).default('15.00'),
+    inflationRate: numeric('inflation_rate', { precision: 5, scale: 2 }).default('3.00'),
+    timeHorizonYears: integer('time_horizon_years').default(30),
+    iterationCount: integer('iteration_count').default(10000),
+    configuration: jsonb('configuration').default({}), // Custom parameters like spending habits
+    isDefault: boolean('is_default').default(false),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const economicVolatilityIndices = pgTable('economic_volatility_indices', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    indexName: text('index_name').notNull(), // 'VIX', 'CPI', 'FedRates', 'RealEstateIndex'
+    currentValue: numeric('current_value', { precision: 12, scale: 4 }).notNull(),
+    standardDeviation: numeric('standard_deviation', { precision: 12, scale: 4 }),
+    observationDate: timestamp('observation_date').notNull(),
+    source: text('source').default('macro_feed'),
+    metadata: jsonb('metadata').default({}),
+});
+
+// ============================================================================
 // GOVERNANCE & INHERITANCE (ESTATE MANAGEMENT)
 // ============================================================================
 
@@ -1965,6 +2000,58 @@ export const familyRoles = pgTable('family_roles', {
     assignedAt: timestamp('assigned_at').defaultNow(),
     expiresAt: timestamp('expires_at'),
     isActive: boolean('is_active').default(true),
+});
+
+// ============================================================================
+// INSTITUTIONAL GOVERNANCE & MULTI-RESOLUTION PROTOCOL (#453)
+// ============================================================================
+
+export const shadowEntities = pgTable('shadow_entities', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(), // e.g., "Family Trust", "Wealth LLC"
+    entityType: text('entity_type').notNull(), // 'trust', 'llc', 'family_office'
+    taxId: text('tax_id'),
+    legalAddress: text('legal_address'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const bylawDefinitions = pgTable('bylaw_definitions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    entityId: uuid('entity_id').references(() => shadowEntities.id, { onDelete: 'cascade' }),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    thresholdAmount: numeric('threshold_amount', { precision: 24, scale: 8 }).notNull(),
+    requiredQuorum: doublePrecision('required_quorum').notNull(), // e.g., 0.66 for 2/3
+    votingPeriodHours: integer('voting_period_hours').default(48),
+    autoExecute: boolean('auto_execute').default(true),
+    isActive: boolean('is_active').default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const governanceResolutions = pgTable('governance_resolutions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    bylawId: uuid('bylaw_id').references(() => bylawDefinitions.id, { onDelete: 'cascade' }).notNull(),
+    resolutionType: text('resolution_type').notNull(), // 'spend', 'transfer', 'bylaw_change'
+    status: text('status').default('open'), // 'open', 'passed', 'failed', 'executed'
+    payload: jsonb('payload').notNull(), // The transaction details being proposed
+    votesFor: integer('votes_for').default(0),
+    votesAgainst: integer('votes_against').default(0),
+    totalEligibleVotes: integer('total_eligible_votes').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+    executedAt: timestamp('executed_at'),
+});
+
+export const votingRecords = pgTable('voting_records', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    resolutionId: uuid('resolution_id').references(() => governanceResolutions.id, { onDelete: 'cascade' }).notNull(),
+    vote: text('vote').notNull(), // 'yes', 'no'
+    votedAt: timestamp('voted_at').defaultNow(),
+    reason: text('reason'),
 });
 
 export const familySettings = pgTable('family_settings', {
@@ -2695,8 +2782,9 @@ export const goalRiskProfiles = pgTable('goal_risk_profiles', {
 export const simulationResults = pgTable('simulation_results', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    resourceId: uuid('resource_id').notNull(), // Goal ID or Portfolio ID
-    resourceType: text('resource_type').notNull(), // 'goal', 'portfolio'
+    scenarioId: uuid('scenario_id').references(() => simulationScenarios.id, { onDelete: 'cascade' }), // For Butterfly Engine
+    resourceId: uuid('resource_id'), // Goal ID or Portfolio ID
+    resourceType: text('resource_type').default('goal'), // 'goal', 'portfolio', 'butterfly'
     simulatedOn: timestamp('simulated_on').defaultNow(),
     p10Value: numeric('p10_value', { precision: 18, scale: 2 }), // Worst case (10th percentile)
     p50Value: numeric('p50_value', { precision: 18, scale: 2 }), // Median (50th percentile)
@@ -3783,7 +3871,7 @@ export const syntheticVaultMappingsRelations = relations(syntheticVaultMappings,
 // ============================================================================
 // PREDICTIVE LIQUIDITY STRESS-TESTING & AUTONOMOUS INSOLVENCY PREVENTION (#428)
 
-export const stressTestScenarios = pgTable('stress_test_scenarios', {
+export const userStressTestScenarios = pgTable('user_stress_test_scenarios', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     scenarioName: text('scenario_name').notNull(), // '50% Income Drop', 'Flash-Crash', 'Medical Emergency'
@@ -4312,4 +4400,26 @@ export const internalClearingLogsRelations = relations(internalClearingLogs, ({ 
 
 export const fxSettlementInstructionsRelations = relations(fxSettlementInstructions, ({ one }) => ({
     user: one(users, { fields: [fxSettlementInstructions.userId], references: [users.id] }),
+}));
+
+export const shadowEntitiesRelations = relations(shadowEntities, ({ one, many }) => ({
+    user: one(users, { fields: [shadowEntities.userId], references: [users.id] }),
+    bylaws: many(bylawDefinitions),
+}));
+
+export const bylawDefinitionsRelations = relations(bylawDefinitions, ({ one, many }) => ({
+    entity: one(shadowEntities, { fields: [bylawDefinitions.entityId], references: [shadowEntities.id] }),
+    vault: one(vaults, { fields: [bylawDefinitions.vaultId], references: [vaults.id] }),
+    resolutions: many(governanceResolutions),
+}));
+
+export const governanceResolutionsRelations = relations(governanceResolutions, ({ one, many }) => ({
+    user: one(users, { fields: [governanceResolutions.userId], references: [users.id] }),
+    bylaw: one(bylawDefinitions, { fields: [governanceResolutions.bylawId], references: [bylawDefinitions.id] }),
+    votes: many(votingRecords),
+}));
+
+export const votingRecordsRelations = relations(votingRecords, ({ one }) => ({
+    user: one(users, { fields: [votingRecords.userId], references: [users.id] }),
+    resolution: one(governanceResolutions, { fields: [votingRecords.resolutionId], references: [governanceResolutions.id] }),
 }));
