@@ -3,6 +3,7 @@ import db from '../config/db.js';
 import { vaults, transactions, liquidityVelocityLogs, users } from '../db/schema.js';
 import { eq, and, gte, sql } from 'drizzle-orm';
 import { logInfo, logError } from '../utils/logger.js';
+import eventBus from '../events/eventBus.js';
 
 /**
  * Velocity Sync Job (L3)
@@ -83,6 +84,23 @@ class VelocityJob {
                 weeklyVelocity: weeklyVelocity.toString(),
                 currency: vault.currency || 'USD',
                 measuredAt: new Date()
+            });
+
+            // 5. Emit autopilot events so WorkflowEngine can evaluate conditions
+            if (dailyBurn < 0) {
+                // Negative daily burn = net expense spike
+                eventBus.emit('EXPENSE_SPIKE_DETECTED', {
+                    userId,
+                    vaultId: vault.id,
+                    amount: Math.abs(dailyBurn),
+                });
+            }
+            // Also emit vault balance signal (estimated from weekly velocity)
+            eventBus.emit('VAULT_BALANCE_UPDATED', {
+                userId,
+                vaultId: vault.id,
+                balance: weeklyNetFlow, // Approximate net position
+                currency: vault.currency || 'USD',
             });
         }
     }

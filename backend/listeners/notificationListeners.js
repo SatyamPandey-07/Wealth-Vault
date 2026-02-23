@@ -49,5 +49,27 @@ export const initializeNotificationListeners = () => {
         });
     });
 
+    // Autopilot: Vault sweep notification
+    eventBus.on('AUTOPILOT_VAULT_SWEEP', async ({ userId, fromVaultId, toVaultId, amount }) => {
+        if (!userId || userId === 'system') return;
+        await notificationService.sendNotification(userId, {
+            title: '🔄 Autopilot: Vault Sweep Queued',
+            message: `Your Autopilot has queued a vault sweep of ${typeof amount === 'number' ? amount.toFixed(2) : amount} from one vault to another.`,
+            type: 'info',
+            data: { fromVaultId, toVaultId, amount },
+        });
+    });
+
+    // Autopilot: Rebalance notification
+    eventBus.on('AUTOPILOT_REBALANCE', async ({ userId, portfolioId }) => {
+        if (!userId || userId === 'system') return;
+        await notificationService.sendNotification(userId, {
+            title: '⚖️ Autopilot: Portfolio Rebalance Triggered',
+            message: `Your Autopilot has triggered a portfolio rebalance. Check your investments for details.`,
+            type: 'info',
+            data: { portfolioId },
+        });
+    });
+
     console.log('✅ Notification Listeners initialized');
 };
