@@ -4119,307 +4119,444 @@ export const escrowContracts = pgTable('escrow_contracts', {
     releaseConditions: jsonb('release_conditions').notNull(), // e.g., { type: 'oracle_event', eventId: '...', requiredSignatures: 2 }
     disputeResolution: text('dispute_resolution').default('arbitration'),
     expiresAt: timestamp('expires_at'),
-// ============================================
-// INVESTMENT PORTFOLIO ANALYZER TABLES
-// ============================================
+    // ============================================
+    // INVESTMENT PORTFOLIO ANALYZER TABLES
+    // ============================================
 
-// Investment Risk Profiles Table
-export const investmentRiskProfiles = pgTable('investment_risk_profiles', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    // Investment Risk Profiles Table
+    export const investmentRiskProfiles = pgTable('investment_risk_profiles', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
 
-    // Risk Assessment Answers
-    riskScore: integer('risk_score').notNull().default(50),
-    riskTolerance: text('risk_tolerance').notNull().default('moderate'), // conservative, moderate, aggressive
-    investmentHorizon: text('investment_horizon').notNull().default('medium'), // short, medium, long
-    investmentExperience: text('investment_experience').notNull().default('intermediate'), // beginner, intermediate, advanced
+        // Risk Assessment Answers
+        riskScore: integer('risk_score').notNull().default(50),
+        riskTolerance: text('risk_tolerance').notNull().default('moderate'), // conservative, moderate, aggressive
+        investmentHorizon: text('investment_horizon').notNull().default('medium'), // short, medium, long
+        investmentExperience: text('investment_experience').notNull().default('intermediate'), // beginner, intermediate, advanced
 
-    // Financial Profile
-    annualIncome: numeric('annual_income', { precision: 15, scale: 2 }).default('0'),
-    netWorth: numeric('net_worth', { precision: 15, scale: 2 }).default('0'),
-    liquidAssets: numeric('liquid_assets', { precision: 15, scale: 2 }).default('0'),
-    emergencyFundMonths: integer('emergency_fund_months').default(3),
+        // Financial Profile
+        annualIncome: numeric('annual_income', { precision: 15, scale: 2 }).default('0'),
+        netWorth: numeric('net_worth', { precision: 15, scale: 2 }).default('0'),
+        liquidAssets: numeric('liquid_assets', { precision: 15, scale: 2 }).default('0'),
+        emergencyFundMonths: integer('emergency_fund_months').default(3),
 
-    // Investment Goals
-    primaryGoal: text('primary_goal').notNull().default('growth'), // growth, income, preservation, balanced
-    retirementAge: integer('retirement_age'),
-    targetRetirementAmount: numeric('target_retirement_amount', { precision: 15, scale: 2 }),
-    monthlyInvestmentCapacity: numeric('monthly_investment_capacity', { precision: 12, scale: 2 }).default('0'),
+        // Investment Goals
+        primaryGoal: text('primary_goal').notNull().default('growth'), // growth, income, preservation, balanced
+        retirementAge: integer('retirement_age'),
+        targetRetirementAmount: numeric('target_retirement_amount', { precision: 15, scale: 2 }),
+        monthlyInvestmentCapacity: numeric('monthly_investment_capacity', { precision: 12, scale: 2 }).default('0'),
 
-    // Risk Factors
-    hasDebt: boolean('has_debt').default(false),
-    debtAmount: numeric('debt_amount', { precision: 15, scale: 2 }).default('0'),
-    hasDependents: boolean('has_dependents').default(false),
-    dependentCount: integer('dependent_count').default(0),
-    hasOtherIncome: boolean('has_other_income').default(false),
-    otherIncomeMonthly: numeric('other_income_monthly', { precision: 12, scale: 2 }).default('0'),
+        // Risk Factors
+        hasDebt: boolean('has_debt').default(false),
+        debtAmount: numeric('debt_amount', { precision: 15, scale: 2 }).default('0'),
+        hasDependents: boolean('has_dependents').default(false),
+        dependentCount: integer('dependent_count').default(0),
+        hasOtherIncome: boolean('has_other_income').default(false),
+        otherIncomeMonthly: numeric('other_income_monthly', { precision: 12, scale: 2 }).default('0'),
 
-    // Market Understanding
-    understandsMarketVolatility: boolean('understands_market_volatility').default(false),
-    canAffordLosses: boolean('can_afford_losses').default(false),
-    maxLossTolerance: numeric('max_loss_tolerance', { precision: 12, scale: 2 }).default('0'),
+        // Market Understanding
+        understandsMarketVolatility: boolean('understands_market_volatility').default(false),
+        canAffordLosses: boolean('can_afford_losses').default(false),
+        maxLossTolerance: numeric('max_loss_tolerance', { precision: 12, scale: 2 }).default('0'),
 
-    // Assessment Details
-    assessmentDate: timestamp('assessment_date').defaultNow(),
-    lastUpdated: timestamp('last_updated').defaultNow(),
-    isActive: boolean('is_active').default(true),
+        // Assessment Details
+        assessmentDate: timestamp('assessment_date').defaultNow(),
+        lastUpdated: timestamp('last_updated').defaultNow(),
+        isActive: boolean('is_active').default(true),
 
-    // Metadata
-    metadata: jsonb('metadata').default({}),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+        // Metadata
+        metadata: jsonb('metadata').default({}),
+        createdAt: timestamp('created_at').defaultNow(),
+        updatedAt: timestamp('updated_at').defaultNow(),
+    });
 
-export const oracleEvents = pgTable('oracle_events', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    eventType: text('event_type').notNull(), // 'property_registration', 'death_certificate', 'loan_repayment_external'
-    eventSource: text('event_source').notNull(), // 'county_clerk', 'vital_statistics', 'plaid_webhook'
-    externalId: text('external_id').notNull(), // Reference ID from source
-    eventData: jsonb('event_data'),
-    status: text('status').default('detected'), // 'detected', 'verified', 'processed', 'ignored'
-    verifiedAt: timestamp('verified_at'),
-    metadata: jsonb('metadata'),
-    createdAt: timestamp('created_at').defaultNow(),
-});
+    export const oracleEvents = pgTable('oracle_events', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        eventType: text('event_type').notNull(), // 'property_registration', 'death_certificate', 'loan_repayment_external'
+        eventSource: text('event_source').notNull(), // 'county_clerk', 'vital_statistics', 'plaid_webhook'
+        externalId: text('external_id').notNull(), // Reference ID from source
+        eventData: jsonb('event_data'),
+        status: text('status').default('detected'), // 'detected', 'verified', 'processed', 'ignored'
+        verifiedAt: timestamp('verified_at'),
+        metadata: jsonb('metadata'),
+        createdAt: timestamp('created_at').defaultNow(),
+    });
 
-export const escrowSignatures = pgTable('escrow_signatures', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    escrowId: uuid('escrow_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
-    signerId: uuid('signer_id').references(() => users.id).notNull(),
-    signature: text('signature').notNull(), // Cryptographic signature
-    publicKey: text('public_key'),
-    signedData: text('signed_data'), // The payload that was signed
-    status: text('status').default('valid'),
-    signedAt: timestamp('signed_at').defaultNow(),
-});
+    export const escrowSignatures = pgTable('escrow_signatures', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        escrowId: uuid('escrow_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+        signerId: uuid('signer_id').references(() => users.id).notNull(),
+        signature: text('signature').notNull(), // Cryptographic signature
+        publicKey: text('public_key'),
+        signedData: text('signed_data'), // The payload that was signed
+        status: text('status').default('valid'),
+        signedAt: timestamp('signed_at').defaultNow(),
+    });
 
-export const vaultLocks = pgTable('vault_locks', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    amount: numeric('amount', { precision: 18, scale: 2 }).notNull(),
-    lockType: text('lock_type').notNull(), // 'escrow', 'lien', 'security_deposit'
-    referenceType: text('reference_type'), // 'escrow_contract', 'loan'
-    referenceId: uuid('reference_id'),
-    status: text('status').default('active'), // 'active', 'released', 'void'
-    expiresAt: timestamp('expires_at'),
-    metadata: jsonb('metadata'),
-// Investment Recommendations Table
-export const investmentRecommendations = pgTable('investment_recommendations', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
+    export const vaultLocks = pgTable('vault_locks', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+        amount: numeric('amount', { precision: 18, scale: 2 }).notNull(),
+        lockType: text('lock_type').notNull(), // 'escrow', 'lien', 'security_deposit'
+        referenceType: text('reference_type'), // 'escrow_contract', 'loan'
+        referenceId: uuid('reference_id'),
+        status: text('status').default('active'), // 'active', 'released', 'void'
+        expiresAt: timestamp('expires_at'),
+        metadata: jsonb('metadata'),
+        // Investment Recommendations Table
+        export const investmentRecommendations = pgTable('investment_recommendations', {
+            id: uuid('id').defaultRandom().primaryKey(),
+            userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+            portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
 
-    // Recommendation Details
-    recommendationType: text('recommendation_type').notNull(), // buy, sell, hold, diversify, rebalance
-    assetSymbol: text('asset_symbol'),
-    assetName: text('asset_name'),
-    assetType: text('asset_type'), // stock, etf, mutual_fund, bond, crypto
+            // Recommendation Details
+            recommendationType: text('recommendation_type').notNull(), // buy, sell, hold, diversify, rebalance
+            assetSymbol: text('asset_symbol'),
+            assetName: text('asset_name'),
+            assetType: text('asset_type'), // stock, etf, mutual_fund, bond, crypto
 
-    // Reasoning
-    reasoning: text('reasoning').notNull(),
-    reasoningFactors: jsonb('reasoning_factors').default([]),
+            // Reasoning
+            reasoning: text('reasoning').notNull(),
+            reasoningFactors: jsonb('reasoning_factors').default([]),
 
-    // Metrics
-    expectedReturn: numeric('expected_return', { precision: 8, scale: 4 }),
-    riskLevel: text('risk_level').notNull(), // low, medium, high
-    confidenceScore: numeric('confidence_score', { precision: 5, scale: 2 }), // 0-100
-    timeHorizon: text('time_horizon'), // short, medium, long
+            // Metrics
+            expectedReturn: numeric('expected_return', { precision: 8, scale: 4 }),
+            riskLevel: text('risk_level').notNull(), // low, medium, high
+            confidenceScore: numeric('confidence_score', { precision: 5, scale: 2 }), // 0-100
+            timeHorizon: text('time_horizon'), // short, medium, long
 
-    // Priority and Status
-    priority: text('priority').default('medium'), // low, medium, high
-    status: text('status').default('active'), // active, dismissed, implemented
-    expiresAt: timestamp('expires_at'),
+            // Priority and Status
+            priority: text('priority').default('medium'), // low, medium, high
+            status: text('status').default('active'), // active, dismissed, implemented
+            expiresAt: timestamp('expires_at'),
 
-    // Financial Impact
-    suggestedAmount: numeric('suggested_amount', { precision: 15, scale: 2 }),
-    potentialGainLoss: numeric('potential_gain_loss', { precision: 15, scale: 2 }),
+            // Financial Impact
+            suggestedAmount: numeric('suggested_amount', { precision: 15, scale: 2 }),
+            potentialGainLoss: numeric('potential_gain_loss', { precision: 15, scale: 2 }),
 
-    // AI Metadata
-    modelVersion: text('model_version'),
-    analysisData: jsonb('analysis_data').default({}),
+            // AI Metadata
+            modelVersion: text('model_version'),
+            analysisData: jsonb('analysis_data').default({}),
 
-    isRead: boolean('is_read').default(false),
-    readAt: timestamp('read_at'),
+            isRead: boolean('is_read').default(false),
+            readAt: timestamp('read_at'),
 
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+            createdAt: timestamp('created_at').defaultNow(),
+            updatedAt: timestamp('updated_at').defaultNow(),
+        });
 
-// Portfolio Rebalancing History Table
-export const portfolioRebalancing = pgTable('portfolio_rebalancing', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+        // Portfolio Rebalancing History Table
+        export const portfolioRebalancing = pgTable('portfolio_rebalancing', {
+            id: uuid('id').defaultRandom().primaryKey(),
+            userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+            portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
 
-    // Rebalancing Details
-    rebalanceType: text('rebalance_type').notNull(), // automatic, suggested, manual
-    triggerReason: text('trigger_reason'), // threshold_exceeded, time_based, optimization, manual
+            // Rebalancing Details
+            rebalanceType: text('rebalance_type').notNull(), // automatic, suggested, manual
+            triggerReason: text('trigger_reason'), // threshold_exceeded, time_based, optimization, manual
 
-    // Before State
-    beforeAllocation: jsonb('before_allocation').notNull(),
-    beforeValue: numeric('before_value', { precision: 15, scale: 2 }).notNull(),
+            // Before State
+            beforeAllocation: jsonb('before_allocation').notNull(),
+            beforeValue: numeric('before_value', { precision: 15, scale: 2 }).notNull(),
 
-    // After State
-    afterAllocation: jsonb('after_allocation'),
-    afterValue: numeric('after_value', { precision: 15, scale: 2 }),
+            // After State
+            afterAllocation: jsonb('after_allocation'),
+            afterValue: numeric('after_value', { precision: 15, scale: 2 }),
 
-    // Actions Taken
-    actions: jsonb('actions').default([]),
+            // Actions Taken
+            actions: jsonb('actions').default([]),
 
-    // Status
-    status: text('status').default('pending'), // pending, completed, cancelled
-    completedAt: timestamp('completed_at'),
+            // Status
+            status: text('status').default('pending'), // pending, completed, cancelled
+            completedAt: timestamp('completed_at'),
 
-    // Metrics
-    expectedImprovement: numeric('expected_improvement', { precision: 8, scale: 4 }),
-    actualImprovement: numeric('actual_improvement', { precision: 8, scale: 4 }),
+            // Metrics
+            expectedImprovement: numeric('expected_improvement', { precision: 8, scale: 4 }),
+            actualImprovement: numeric('actual_improvement', { precision: 8, scale: 4 }),
 
-    notes: text('notes'),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+            notes: text('notes'),
+            createdAt: timestamp('created_at').defaultNow(),
+            updatedAt: timestamp('updated_at').defaultNow(),
+        });
 
-// ESCROW PROTOCOL RELATIONS
-export const escrowContractsRelations = relations(escrowContracts, ({ one, many }) => ({
-    user: one(users, { fields: [escrowContracts.userId], references: [users.id] }),
-    creator: one(users, { fields: [escrowContracts.creatorId], references: [users.id] }),
-    payer: one(users, { fields: [escrowContracts.payerId], references: [users.id] }),
-    payee: one(users, { fields: [escrowContracts.payeeId], references: [users.id] }),
-    vault: one(vaults, { fields: [escrowContracts.vaultId], references: [vaults.id] }),
-    signatures: many(escrowSignatures),
-}));
+        // ESCROW PROTOCOL RELATIONS
+        export const escrowContractsRelations = relations(escrowContracts, ({ one, many }) => ({
+            user: one(users, { fields: [escrowContracts.userId], references: [users.id] }),
+            creator: one(users, { fields: [escrowContracts.creatorId], references: [users.id] }),
+            payer: one(users, { fields: [escrowContracts.payerId], references: [users.id] }),
+            payee: one(users, { fields: [escrowContracts.payeeId], references: [users.id] }),
+            vault: one(vaults, { fields: [escrowContracts.vaultId], references: [vaults.id] }),
+            signatures: many(escrowSignatures),
+        }));
 
-export const oracleEventsRelations = relations(oracleEvents, ({ many }) => ({
-    linkedContracts: many(escrowContracts),
-}));
+        export const oracleEventsRelations = relations(oracleEvents, ({ many }) => ({
+            linkedContracts: many(escrowContracts),
+        }));
 
-export const escrowSignaturesRelations = relations(escrowSignatures, ({ one }) => ({
-    escrow: one(escrowContracts, { fields: [escrowSignatures.escrowId], references: [escrowContracts.id] }),
-    signer: one(users, { fields: [escrowSignatures.signerId], references: [users.id] }),
-}));
+        export const escrowSignaturesRelations = relations(escrowSignatures, ({ one }) => ({
+            escrow: one(escrowContracts, { fields: [escrowSignatures.escrowId], references: [escrowContracts.id] }),
+            signer: one(users, { fields: [escrowSignatures.signerId], references: [users.id] }),
+        }));
 
-export const vaultLocksRelations = relations(vaultLocks, ({ one }) => ({
-    vault: one(vaults, { fields: [vaultLocks.vaultId], references: [vaults.id] }),
-    user: one(users, { fields: [vaultLocks.userId], references: [users.id] }),
-}));
+        export const vaultLocksRelations = relations(vaultLocks, ({ one }) => ({
+            vault: one(vaults, { fields: [vaultLocks.vaultId], references: [vaults.id] }),
+            user: one(users, { fields: [vaultLocks.userId], references: [users.id] }),
+        }));
 
-export const escrowDisputes = pgTable('escrow_disputes', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    escrowId: uuid('escrow_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
-    initiatorId: uuid('initiator_id').references(() => users.id).notNull(),
-    reason: text('reason').notNull(),
-    evidence: jsonb('evidence'),
-    status: text('status').default('open'), // 'open', 'resolved', 'arbitration_pending'
-    resolution: text('resolution'), // 'refund_to_payer', 'release_to_payee', 'split'
-    resolvedAt: timestamp('resolved_at'),
-    metadata: jsonb('metadata'),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
+        export const escrowDisputes = pgTable('escrow_disputes', {
+            id: uuid('id').defaultRandom().primaryKey(),
+            escrowId: uuid('escrow_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+            initiatorId: uuid('initiator_id').references(() => users.id).notNull(),
+            reason: text('reason').notNull(),
+            evidence: jsonb('evidence'),
+            status: text('status').default('open'), // 'open', 'resolved', 'arbitration_pending'
+            resolution: text('resolution'), // 'refund_to_payer', 'release_to_payee', 'split'
+            resolvedAt: timestamp('resolved_at'),
+            metadata: jsonb('metadata'),
+            createdAt: timestamp('created_at').defaultNow(),
+            updatedAt: timestamp('updated_at').defaultNow(),
+        });
 
-export const escrowDisputesRelations = relations(escrowDisputes, ({ one }) => ({
-    escrow: one(escrowContracts, { fields: [escrowDisputes.escrowId], references: [escrowContracts.id] }),
-    initiator: one(users, { fields: [escrowDisputes.initiatorId], references: [users.id] }),
-// Relations for Investment Portfolio Analyzer Tables
-export const investmentRiskProfilesRelations = relations(investmentRiskProfiles, ({ one, many }) => ({
-    user: one(users, {
-        fields: [investmentRiskProfiles.userId],
-        references: [users.id],
-    }),
-}));
+        export const escrowDisputesRelations = relations(escrowDisputes, ({ one }) => ({
+            escrow: one(escrowContracts, { fields: [escrowDisputes.escrowId], references: [escrowContracts.id] }),
+            initiator: one(users, { fields: [escrowDisputes.initiatorId], references: [users.id] }),
+            // Relations for Investment Portfolio Analyzer Tables
+            export const investmentRiskProfilesRelations = relations(investmentRiskProfiles, ({ one, many }) => ({
+                user: one(users, {
+                    fields: [investmentRiskProfiles.userId],
+                    references: [users.id],
+                }),
+            }));
 
-export const investmentRecommendationsRelations = relations(investmentRecommendations, ({ one }) => ({
-    user: one(users, {
-        fields: [investmentRecommendations.userId],
-        references: [users.id],
-    }),
-    portfolio: one(portfolios, {
-        fields: [investmentRecommendations.portfolioId],
-        references: [portfolios.id],
-    }),
-}));
+            export const investmentRecommendationsRelations = relations(investmentRecommendations, ({ one }) => ({
+                user: one(users, {
+                    fields: [investmentRecommendations.userId],
+                    references: [users.id],
+                }),
+                portfolio: one(portfolios, {
+                    fields: [investmentRecommendations.portfolioId],
+                    references: [portfolios.id],
+                }),
+            }));
 
-export const portfolioRebalancingRelations = relations(portfolioRebalancing, ({ one }) => ({
-    user: one(users, {
-        fields: [portfolioRebalancing.userId],
-        references: [users.id],
-    }),
-    portfolio: one(portfolios, {
-        fields: [portfolioRebalancing.portfolioId],
-        references: [portfolios.id],
-    }),
-}));
+            export const portfolioRebalancingRelations = relations(portfolioRebalancing, ({ one }) => ({
+                user: one(users, {
+                    fields: [portfolioRebalancing.userId],
+                    references: [users.id],
+                }),
+                portfolio: one(portfolios, {
+                    fields: [portfolioRebalancing.portfolioId],
+                    references: [portfolios.id],
+                }),
+            }));
 
-export const taxLossOpportunitiesRelations = relations(taxLossOpportunities, ({ one }) => ({
-    user: one(users, { fields: [taxLossOpportunities.userId], references: [users.id] }),
-    portfolio: one(portfolios, { fields: [taxLossOpportunities.portfolioId], references: [portfolios.id] }),
-    investment: one(investments, { fields: [taxLossOpportunities.investmentId], references: [investments.id] }),
-}));
+            export const taxLossOpportunitiesRelations = relations(taxLossOpportunities, ({ one }) => ({
+                user: one(users, { fields: [taxLossOpportunities.userId], references: [users.id] }),
+                portfolio: one(portfolios, { fields: [taxLossOpportunities.portfolioId], references: [portfolios.id] }),
+                investment: one(investments, { fields: [taxLossOpportunities.investmentId], references: [investments.id] }),
+            }));
 
-export const washSaleViolationsRelations = relations(washSaleViolations, ({ one }) => ({
-    user: one(users, { fields: [washSaleViolations.userId], references: [users.id] }),
-    investment: one(investments, { fields: [washSaleViolations.investmentId], references: [investments.id] }),
-}));
+            export const washSaleViolationsRelations = relations(washSaleViolations, ({ one }) => ({
+                user: one(users, { fields: [washSaleViolations.userId], references: [users.id] }),
+                investment: one(investments, { fields: [washSaleViolations.investmentId], references: [investments.id] }),
+            }));
 
-// Update users relations to include new tables - DELETED DUPLICATE
+            // Update users relations to include new tables - DELETED DUPLICATE
 
-export const taxLotInventoryRelations = relations(taxLotInventory, ({ one, many }) => ({
-    user: one(users, { fields: [taxLotInventory.userId], references: [users.id] }),
-    portfolio: one(portfolios, { fields: [taxLotInventory.portfolioId], references: [portfolios.id] }),
-    investment: one(investments, { fields: [taxLotInventory.investmentId], references: [investments.id] }),
-    adjustments: many(costBasisAdjustments),
-}));
+            export const taxLotInventoryRelations = relations(taxLotInventory, ({ one, many }) => ({
+                user: one(users, { fields: [taxLotInventory.userId], references: [users.id] }),
+                portfolio: one(portfolios, { fields: [taxLotInventory.portfolioId], references: [portfolios.id] }),
+                investment: one(investments, { fields: [taxLotInventory.investmentId], references: [investments.id] }),
+                adjustments: many(costBasisAdjustments),
+            }));
 
-export const costBasisAdjustmentsRelations = relations(costBasisAdjustments, ({ one }) => ({
-    lot: one(taxLotInventory, { fields: [costBasisAdjustments.lotId], references: [taxLotInventory.id] }),
-}));
+            export const costBasisAdjustmentsRelations = relations(costBasisAdjustments, ({ one }) => ({
+                lot: one(taxLotInventory, { fields: [costBasisAdjustments.lotId], references: [taxLotInventory.id] }),
+            }));
 
-export const liquidationQueuesRelations = relations(liquidationQueues, ({ many, one }) => ({
-    user: one(users, { fields: [liquidationQueues.userId], references: [users.id] }),
-    investment: one(investments, { fields: [liquidationQueues.investmentId], references: [investments.id] }),
-}));
+            export const liquidationQueuesRelations = relations(liquidationQueues, ({ many, one }) => ({
+                user: one(users, { fields: [liquidationQueues.userId], references: [users.id] }),
+                investment: one(investments, { fields: [liquidationQueues.investmentId], references: [investments.id] }),
+            }));
 
-export const marginRequirementsRelations = relations(marginRequirements, ({ one }) => ({
-    user: one(users, { fields: [marginRequirements.userId], references: [users.id] }),
-}));
+            export const marginRequirementsRelations = relations(marginRequirements, ({ one }) => ({
+                user: one(users, { fields: [marginRequirements.userId], references: [users.id] }),
+            }));
 
-export const collateralSnapshotsRelations = relations(collateralSnapshots, ({ one }) => ({
-    user: one(users, { fields: [collateralSnapshots.userId], references: [users.id] }),
-}));
+            export const collateralSnapshotsRelations = relations(collateralSnapshots, ({ one }) => ({
+                user: one(users, { fields: [collateralSnapshots.userId], references: [users.id] }),
+            }));
 
-export const liquidityPoolsRelations = relations(liquidityPools, ({ one }) => ({
-    user: one(users, { fields: [liquidityPools.userId], references: [users.id] }),
-}));
+            export const liquidityPoolsRelations = relations(liquidityPools, ({ one }) => ({
+                user: one(users, { fields: [liquidityPools.userId], references: [users.id] }),
+            }));
 
-export const internalClearingLogsRelations = relations(internalClearingLogs, ({ one }) => ({
-    user: one(users, { fields: [internalClearingLogs.userId], references: [users.id] }),
-    fromVault: one(vaults, { fields: [internalClearingLogs.fromVaultId], references: [vaults.id] }),
-    toVault: one(vaults, { fields: [internalClearingLogs.toVaultId], references: [vaults.id] }),
-}));
+            export const internalClearingLogsRelations = relations(internalClearingLogs, ({ one }) => ({
+                user: one(users, { fields: [internalClearingLogs.userId], references: [users.id] }),
+                fromVault: one(vaults, { fields: [internalClearingLogs.fromVaultId], references: [vaults.id] }),
+                toVault: one(vaults, { fields: [internalClearingLogs.toVaultId], references: [vaults.id] }),
+            }));
 
-export const fxSettlementInstructionsRelations = relations(fxSettlementInstructions, ({ one }) => ({
-    user: one(users, { fields: [fxSettlementInstructions.userId], references: [users.id] }),
-}));
+            export const fxSettlementInstructionsRelations = relations(fxSettlementInstructions, ({ one }) => ({
+                user: one(users, { fields: [fxSettlementInstructions.userId], references: [users.id] }),
+            }));
 
-export const shadowEntitiesRelations = relations(shadowEntities, ({ one, many }) => ({
-    user: one(users, { fields: [shadowEntities.userId], references: [users.id] }),
-    bylaws: many(bylawDefinitions),
-}));
+            export const shadowEntitiesRelations = relations(shadowEntities, ({ one, many }) => ({
+                user: one(users, { fields: [shadowEntities.userId], references: [users.id] }),
+                bylaws: many(bylawDefinitions),
+            }));
 
-export const bylawDefinitionsRelations = relations(bylawDefinitions, ({ one, many }) => ({
-    entity: one(shadowEntities, { fields: [bylawDefinitions.entityId], references: [shadowEntities.id] }),
-    vault: one(vaults, { fields: [bylawDefinitions.vaultId], references: [vaults.id] }),
-    resolutions: many(governanceResolutions),
-}));
+            export const bylawDefinitionsRelations = relations(bylawDefinitions, ({ one, many }) => ({
+                entity: one(shadowEntities, { fields: [bylawDefinitions.entityId], references: [shadowEntities.id] }),
+                vault: one(vaults, { fields: [bylawDefinitions.vaultId], references: [vaults.id] }),
+                resolutions: many(governanceResolutions),
+            }));
 
-export const governanceResolutionsRelations = relations(governanceResolutions, ({ one, many }) => ({
-    user: one(users, { fields: [governanceResolutions.userId], references: [users.id] }),
-    bylaw: one(bylawDefinitions, { fields: [governanceResolutions.bylawId], references: [bylawDefinitions.id] }),
-    votes: many(votingRecords),
-}));
+            export const governanceResolutionsRelations = relations(governanceResolutions, ({ one, many }) => ({
+                user: one(users, { fields: [governanceResolutions.userId], references: [users.id] }),
+                bylaw: one(bylawDefinitions, { fields: [governanceResolutions.bylawId], references: [bylawDefinitions.id] }),
+                votes: many(votingRecords),
+            }));
 
-export const votingRecordsRelations = relations(votingRecords, ({ one }) => ({
-    user: one(users, { fields: [votingRecords.userId], references: [users.id] }),
-    resolution: one(governanceResolutions, { fields: [votingRecords.resolutionId], references: [governanceResolutions.id] }),
-}));
+            export const votingRecordsRelations = relations(votingRecords, ({ one }) => ({
+                user: one(users, { fields: [votingRecords.userId], references: [users.id] }),
+                resolution: one(governanceResolutions, { fields: [votingRecords.resolutionId], references: [governanceResolutions.id] }),
+            }));
+
+            // ============================================================================
+            // GLOBAL TAX-LOT HISTORY — per-lot G/L ledger, HIFO | FIFO | LIFO (#460)
+            // Used by taxLotService.js, washSaleChecker.js, harvestEngine.js
+            // ============================================================================
+
+            export const taxLotHistory = pgTable('tax_lot_history', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+                investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }).notNull(),
+                acquisitionDate: timestamp('acquisition_date').notNull(),
+                quantity: numeric('quantity', { precision: 18, scale: 8 }).notNull(),
+                unitPrice: numeric('unit_price', { precision: 18, scale: 4 }).notNull(),
+                costBasis: numeric('cost_basis', { precision: 18, scale: 2 }).notNull(),
+                currency: text('currency').default('USD'),
+                jurisdiction: text('jurisdiction').default('US'),
+                // 'open' | 'closed' | 'harvested' | 'wash_sale_adjusted'
+                status: text('status').default('open'),
+                isSold: boolean('is_sold').default(false),
+                soldDate: timestamp('sold_date'),
+                salePrice: numeric('sale_price', { precision: 18, scale: 4 }),
+                realizedGainLoss: numeric('realized_gain_loss', { precision: 18, scale: 4 }),
+                holdingPeriodDays: integer('holding_period_days'),
+                isLongTerm: boolean('is_long_term').default(false),
+                washSaleDisallowed: numeric('wash_sale_disallowed', { precision: 18, scale: 4 }).default('0'),
+                replacementLotId: uuid('replacement_lot_id'),
+                fxRateAtAcquisition: numeric('fx_rate_at_acquisition', { precision: 18, scale: 6 }).default('1'),
+                fxRateAtDisposal: numeric('fx_rate_at_disposal', { precision: 18, scale: 6 }),
+                // Source: 'manual' | 'fx_swap' | 'expense' | 'investment' | 'dividend'
+                lotSource: text('lot_source').default('manual'),
+                metadata: jsonb('metadata').default({}),
+                createdAt: timestamp('created_at').defaultNow(),
+                updatedAt: timestamp('updated_at').defaultNow(),
+            }, (table) => ({
+                userInvestmentIdx: index('idx_lot_history_user_inv').on(table.userId, table.investmentId),
+                statusIdx: index('idx_lot_history_status').on(table.status),
+                acquiredIdx: index('idx_lot_history_acquired').on(table.acquisitionDate),
+                jurisdictionIdx: index('idx_lot_history_jurisdiction').on(table.jurisdiction),
+            }));
+
+            export const taxLotHistoryRelations = relations(taxLotHistory, ({ one }) => ({
+                user: one(users, { fields: [taxLotHistory.userId], references: [users.id] }),
+                investment: one(investments, { fields: [taxLotHistory.investmentId], references: [investments.id] }),
+            }));
+
+            // ============================================================================
+            // AUTONOMOUS "FINANCIAL AUTOPILOT" & EVENT-DRIVEN WORKFLOW ORCHESTRATOR (#461)
+            // ============================================================================
+
+            export const autopilotWorkflows = pgTable('autopilot_workflows', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+                name: text('name').notNull(),
+                description: text('description'),
+                status: text('status').default('draft').notNull(),
+                triggerLogic: text('trigger_logic').default('AND').notNull(),
+                domain: text('domain').notNull(),
+                priority: integer('priority').default(0),
+                cooldownMinutes: integer('cooldown_minutes').default(60),
+                lastExecutedAt: timestamp('last_executed_at'),
+                executionCount: integer('execution_count').default(0),
+                maxExecutions: integer('max_executions'),
+                dslDefinition: jsonb('dsl_definition').default({}),
+                metadata: jsonb('metadata').default({}),
+                createdAt: timestamp('created_at').defaultNow(),
+                updatedAt: timestamp('updated_at').defaultNow(),
+            }, (table) => ({
+                userIdx: index('idx_autopilot_user').on(table.userId),
+                statusIdx: index('idx_autopilot_status').on(table.status),
+                domainIdx: index('idx_autopilot_domain').on(table.domain),
+            }));
+
+            export const workflowTriggers = pgTable('workflow_triggers', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+                userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+                variable: text('variable').notNull(),
+                operator: text('operator').notNull(),
+                thresholdValue: numeric('threshold_value', { precision: 24, scale: 8 }).notNull(),
+                scopeVaultId: uuid('scope_vault_id').references(() => vaults.id, { onDelete: 'set null' }),
+                currentStatus: boolean('current_status').default(false),
+                lastCheckedAt: timestamp('last_checked_at').defaultNow(),
+                lastValueObserved: numeric('last_value_observed', { precision: 24, scale: 8 }),
+                createdAt: timestamp('created_at').defaultNow(),
+            }, (table) => ({
+                workflowIdx: index('idx_trigger_workflow').on(table.workflowId),
+                userIdx: index('idx_trigger_user').on(table.userId),
+                variableIdx: index('idx_trigger_variable').on(table.variable),
+            }));
+
+            export const workflowActions = pgTable('workflow_actions', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+                stepOrder: integer('step_order').notNull(),
+                actionType: text('action_type').notNull(),
+                parameters: jsonb('parameters').default({}),
+                abortOnFailure: boolean('abort_on_failure').default(true),
+                lastRunStatus: text('last_run_status').default('pending'),
+                createdAt: timestamp('created_at').defaultNow(),
+            }, (table) => ({
+                workflowStepIdx: index('idx_action_workflow_step').on(table.workflowId, table.stepOrder),
+            }));
+
+            export const workflowExecutionLogs = pgTable('workflow_execution_logs', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+                workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+                triggerEvent: text('trigger_event'),
+                resultStatus: text('result_status').notNull(),
+                triggerSnapshot: jsonb('trigger_snapshot').default({}),
+                actionResults: jsonb('action_results').default([]),
+                summary: text('summary'),
+                executedAt: timestamp('executed_at').defaultNow(),
+                durationMs: integer('duration_ms'),
+            });
+
+            export const autopilotWorkflowsRelations = relations(autopilotWorkflows, ({ one, many }) => ({
+                user: one(users, { fields: [autopilotWorkflows.userId], references: [users.id] }),
+                triggers: many(workflowTriggers),
+                actions: many(workflowActions),
+                executionLogs: many(workflowExecutionLogs),
+            }));
+
+            export const workflowTriggersRelations = relations(workflowTriggers, ({ one }) => ({
+                workflow: one(autopilotWorkflows, { fields: [workflowTriggers.workflowId], references: [autopilotWorkflows.id] }),
+                user: one(users, { fields: [workflowTriggers.userId], references: [users.id] }),
+                vault: one(vaults, { fields: [workflowTriggers.scopeVaultId], references: [vaults.id] }),
+            }));
+
+            export const workflowActionsRelations = relations(workflowActions, ({ one }) => ({
+                workflow: one(autopilotWorkflows, { fields: [workflowActions.workflowId], references: [autopilotWorkflows.id] }),
+            }));
+
+            export const workflowExecutionLogsRelations = relations(workflowExecutionLogs, ({ one }) => ({
+                user: one(users, { fields: [workflowExecutionLogs.userId], references: [users.id] }),
+                workflow: one(autopilotWorkflows, { fields: [workflowExecutionLogs.workflowId], references: [autopilotWorkflows.id] }),
+            }));
