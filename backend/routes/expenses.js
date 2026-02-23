@@ -18,6 +18,7 @@ import { ApiResponse } from "../utils/ApiResponse.js";
 import { liquidityGuard } from "../middleware/liquidityGuard.js";
 import { riskInterceptor } from "../middleware/riskInterceptor.js";
 import { signalAutopilot } from "../middleware/triggerInterceptor.js";
+import { enforceInstitutionalGovernance } from "../middleware/govGuard.js";
 
 // Side-effects like updateCategoryStats, monitorBudget, matchSubscription
 // are now handled by event listeners in ../listeners/
@@ -210,6 +211,7 @@ router.post(
   securityGuard, // Security guard middleware
   liquidityGuard, // Predictive liquidity check
   riskInterceptor, // Black-swan protection
+  enforceInstitutionalGovernance, // Multi-Sig Resolution protocol
   securityInterceptor(),
   [
     body("amount").isFloat({ min: 0.01 }),

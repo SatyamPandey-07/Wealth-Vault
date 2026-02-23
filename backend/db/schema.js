@@ -953,6 +953,75 @@ export const refinanceOpportunities = pgTable('refinance_opportunities', {
 });
 
 // ============================================================================
+// ALGORITHMIC DEBT RESTRUCTURING & DEFAULT PREDICTION (#441)
+// ============================================================================
+
+export const defaultPredictionScores = pgTable('default_prediction_scores', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    predictionDate: timestamp('prediction_date').defaultNow(),
+    probabilityOfDefault: numeric('probability_of_default', { precision: 5, scale: 4 }).notNull(), // 0.0000 to 1.0000
+    horizonDays: integer('horizon_days').default(90),
+    riskLevel: text('risk_level').notNull(), // 'low', 'medium', 'high', 'critical'
+    factors: jsonb('factors').default({}), // Contributing factors (liquidity, cash flow, macro)
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const debtRestructuringPlans = pgTable('debt_restructuring_plans', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    predictionId: uuid('prediction_id').references(() => defaultPredictionScores.id),
+    planType: text('plan_type').notNull(), // 'snowball', 'avalanche', 'consolidation', 'emergency_diversion'
+    proposedAdjustments: jsonb('proposed_adjustments').notNull(), // Specific debt-payment shifts
+    estimatedInterestSavings: numeric('estimated_interest_savings', { precision: 12, scale: 2 }),
+    status: text('status').default('proposed'), // 'proposed', 'approved', 'executed', 'dismissed'
+    executedAt: timestamp('executed_at'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const macroEconomicIndicators = pgTable('macro_economic_indicators', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    indicatorName: text('indicator_name').notNull(), // 'fed_funds_rate', 'libor', 'inflation_rate'
+    value: numeric('value', { precision: 8, scale: 4 }).notNull(),
+    periodDate: timestamp('period_date').notNull(),
+    source: text('source').default('simulated'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// ============================================================================
+// DYNAMIC REBALANCING ORDERS & VAULT CONSOLIDATION (#449)
+// ============================================================================
+
+export const rebalancingOrders = pgTable('rebalancing_orders', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
+    orderType: text('order_type').notNull(), // 'buy', 'sell'
+    assetSymbol: text('asset_symbol').notNull(),
+    quantity: numeric('quantity', { precision: 18, scale: 8 }).notNull(),
+    estimatedPrice: numeric('estimated_price', { precision: 18, scale: 2 }).notNull(),
+    status: text('status').default('proposed'), // 'proposed', 'approved', 'executed', 'cancelled'
+    driftDelta: numeric('drift_delta', { precision: 5, scale: 4 }),
+    metadata: jsonb('metadata').default({}),
+    executedAt: timestamp('executed_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const vaultConsolidationLogs = pgTable('vault_consolidation_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    consolidationDate: timestamp('consolidation_date').defaultNow(),
+    consolidatedBalance: numeric('consolidated_balance', { precision: 18, scale: 2 }).notNull(),
+    vaultIds: jsonb('vault_ids').notNull(), // Array of vault IDs consolidated
+    assetDistribution: jsonb('asset_distribution').notNull(), // { 'equity': 0.6, 'crypto': 0.4 }
+    metadata: jsonb('metadata').default({}),
+});
+
+// ============================================================================
 // TAX MODULE
 // ============================================================================
 
@@ -1080,6 +1149,49 @@ export const userTaxProfiles = pgTable('user_tax_profiles', {
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
+
+// ============================================================================
+// PREDICTIVE TAX-LOSS HARVESTING MODULE (#442)
+// ============================================================================
+
+export const taxLossOpportunities = pgTable('tax_loss_opportunities', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+    investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }).notNull(),
+    assetSymbol: text('asset_symbol').notNull(),
+    unrealizedLoss: numeric('unrealized_loss', { precision: 18, scale: 2 }).notNull(),
+    taxSavingsEstimate: numeric('tax_savings_estimate', { precision: 18, scale: 2 }),
+    status: text('status').default('pending'), // 'pending', 'executed', 'dismissed'
+    proxyAssetSymbol: text('proxy_asset_symbol'),
+    correlationScore: numeric('correlation_score', { precision: 5, scale: 4 }),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const washSaleViolations = pgTable('wash_sale_violations', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }),
+    assetSymbol: text('asset_symbol').notNull(),
+    violationDate: timestamp('violation_date').notNull(),
+    description: text('description'),
+    disallowedLoss: numeric('disallowed_loss', { precision: 18, scale: 2 }).notNull(),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const assetCorrelationMatrix = pgTable('asset_correlation_matrix', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    baseAssetSymbol: text('base_asset_symbol').notNull(),
+    proxyAssetSymbol: text('proxy_asset_symbol').notNull(),
+    correlationCoefficient: numeric('correlation_coefficient', { precision: 5, scale: 4 }).notNull(),
+    beta: numeric('beta', { precision: 8, scale: 4 }),
+    lastUpdated: timestamp('last_updated').defaultNow(),
+}, (table) => ({
+    assetPairIdx: index('idx_asset_correlation_pair').on(table.baseAssetSymbol, table.proxyAssetSymbol),
+}));
 
 // ============================================================================
 // REAL ESTATE MODULE (#265)
@@ -1227,6 +1339,7 @@ export const usersRelations = relations(users, ({ many, one }) => ({
     categories: many(categories),
     expenses: many(expenses),
     goals: many(goals),
+    deviceSessions: many(deviceSessions),
     vaultMemberships: many(vaultMembers),
     ownedVaults: many(vaults),
     debts: many(debts),
@@ -1235,8 +1348,67 @@ export const usersRelations = relations(users, ({ many, one }) => ({
     corporateEntities: many(corporateEntities),
     dividendPayouts: many(dividendPayouts),
     securityEvents: many(securityEvents),
+    reports: many(reports),
     budgetAlerts: many(budgetAlerts),
+    portfolios: many(portfolios),
     subscriptions: many(subscriptions),
+    bills: many(bills),
+    debtPayments: many(debtPayments),
+    expenseShares: many(expenseShares),
+    sentReimbursements: many(reimbursements, { relationName: 'reimbursements_from' }),
+    receivedReimbursements: many(reimbursements, { relationName: 'reimbursements_to' }),
+    bankAccounts: many(bankAccounts),
+    bankTransactions: many(bankTransactions),
+    emergencyFundGoals: many(emergencyFundGoals),
+    creditScores: many(creditScores),
+    creditScoreAlerts: many(creditScoreAlerts),
+    billNegotiations: many(billNegotiation),
+    negotiationAttempts: many(negotiationAttempts),
+    investmentRiskProfiles: many(investmentRiskProfiles),
+    investmentRecommendations: many(investmentRecommendations),
+    taxLossOpportunities: many(taxLossOpportunities),
+    washSaleViolations: many(washSaleViolations),
+    defaultPredictionScores: many(defaultPredictionScores),
+    debtRestructuringPlans: many(debtRestructuringPlans),
+    targetAllocations: many(targetAllocations),
+    rebalancingOrders: many(rebalancingOrders),
+    vaultConsolidationLogs: many(vaultConsolidationLogs),
+    taxLotInventory: many(taxLotInventory),
+    liquidationQueues: many(liquidationQueues),
+    marginRequirements: many(marginRequirements),
+    collateralSnapshots: many(collateralSnapshots),
+    liquidityPools: many(liquidityPools),
+    internalClearingLogs: many(internalClearingLogs),
+    fxSettlementInstructions: many(fxSettlementInstructions),
+    simulationScenarios: many(simulationScenarios),
+    simulationResults: many(simulationResults),
+    shadowEntities: many(shadowEntities),
+    governanceResolutions: many(governanceResolutions),
+    votingRecords: many(votingRecords),
+}));
+
+export const targetAllocationsRelations = relations(targetAllocations, ({ one }) => ({
+    user: one(users, { fields: [targetAllocations.userId], references: [users.id] }),
+    portfolio: one(portfolios, { fields: [targetAllocations.portfolioId], references: [portfolios.id] }),
+}));
+
+export const rebalancingOrdersRelations = relations(rebalancingOrders, ({ one }) => ({
+    user: one(users, { fields: [rebalancingOrders.userId], references: [users.id] }),
+    portfolio: one(portfolios, { fields: [rebalancingOrders.portfolioId], references: [portfolios.id] }),
+}));
+
+export const vaultConsolidationLogsRelations = relations(vaultConsolidationLogs, ({ one }) => ({
+    user: one(users, { fields: [vaultConsolidationLogs.userId], references: [users.id] }),
+}));
+
+export const defaultPredictionScoresRelations = relations(defaultPredictionScores, ({ one, many }) => ({
+    user: one(users, { fields: [defaultPredictionScores.userId], references: [users.id] }),
+    restructuringPlans: many(debtRestructuringPlans),
+}));
+
+export const debtRestructuringPlansRelations = relations(debtRestructuringPlans, ({ one }) => ({
+    user: one(users, { fields: [debtRestructuringPlans.userId], references: [users.id] }),
+    prediction: one(defaultPredictionScores, { fields: [debtRestructuringPlans.predictionId], references: [defaultPredictionScores.id] }),
 }));
 
 export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
@@ -1695,6 +1867,66 @@ export const exchangeRateHistory = pgTable('exchange_rate_history', {
     dateIdx: index('idx_fx_date').on(table.rateTimestamp),
 }));
 
+// ============================================================================
+// SELF-ADJUSTING LIQUIDITY BRIDGE & FX SETTLEMENT LAYER (#455)
+// ============================================================================
+
+export const liquidityPools = pgTable('liquidity_pools', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    currencyCode: text('currency_code').notNull(),
+    totalBalance: numeric('total_balance', { precision: 24, scale: 8 }).default('0'),
+    lockedLiquidity: numeric('locked_liquidity', { precision: 24, scale: 8 }).default('0'),
+    minThreshold: numeric('min_threshold', { precision: 24, scale: 8 }).default('1000'), // Trigger external rail if below
+    lastRebalancedAt: timestamp('last_rebalanced_at'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const internalClearingLogs = pgTable('internal_clearing_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    fromVaultId: uuid('from_vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    toVaultId: uuid('to_vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    fromCurrency: text('from_currency').notNull(),
+    toCurrency: text('to_currency').notNull(),
+    amountOrig: numeric('amount_orig', { precision: 24, scale: 8 }).notNull(),
+    amountSettled: numeric('amount_settled', { precision: 24, scale: 8 }).notNull(),
+    appliedExchangeRate: numeric('applied_exchange_rate', { precision: 18, scale: 6 }).notNull(),
+    savingsVsMarket: numeric('savings_vs_market', { precision: 18, scale: 2 }).default('0'),
+    settlementStatus: text('settlement_status').default('completed'), // 'completed', 'pending', 'offset'
+    clearingMethod: text('clearing_method').default('ledger_offset'), // 'ledger_offset', 'bridge_pool'
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const fxSettlementInstructions = pgTable('fx_settlement_instructions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    instructionType: text('instruction_type').notNull(), // 'instant', 'limit', 'scheduled'
+    priority: text('priority').default('medium'), // 'high', 'medium', 'low'
+    sourceCurrency: text('source_currency').notNull(),
+    targetCurrency: text('target_currency').notNull(),
+    amount: numeric('amount', { precision: 24, scale: 8 }).notNull(),
+    limitRate: numeric('limit_rate', { precision: 18, scale: 6 }),
+    status: text('status').default('queued'), // 'queued', 'executing', 'fulfilled', 'cancelled'
+    metadata: jsonb('metadata').default({}),
+    executedAt: timestamp('executed_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const marketRatesOracle = pgTable('market_rates_oracle', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    baseCurrency: text('base_currency').notNull(),
+    quoteCurrency: text('quote_currency').notNull(),
+    midRate: numeric('mid_rate', { precision: 18, scale: 6 }).notNull(),
+    bidRate: numeric('bid_rate', { precision: 18, scale: 6 }),
+    askRate: numeric('ask_rate', { precision: 18, scale: 6 }),
+    volatility24h: numeric('volatility_24h', { precision: 5, scale: 4 }),
+    lastUpdated: timestamp('last_updated').defaultNow(),
+    source: text('source').default('interbank_direct'),
+});
+
 // Currency Hedging Positions - Tracking hedges against FX volatility
 export const currencyHedgingPositions = pgTable('currency_hedging_positions', {
     id: uuid('id').defaultRandom().primaryKey(),
@@ -1715,6 +1947,36 @@ export const currencyHedgingPositions = pgTable('currency_hedging_positions', {
     userIdx: index('idx_hedge_user').on(table.userId),
     statusIdx: index('idx_hedge_status').on(table.status),
 }));
+
+// ============================================================================
+// PREDICTIVE "FINANCIAL BUTTERFLY" MONTE CARLO ENGINE (#454)
+// ============================================================================
+
+export const simulationScenarios = pgTable('simulation_scenarios', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    baseYearlyGrowth: numeric('base_yearly_growth', { precision: 5, scale: 2 }).default('7.00'),
+    marketVolatility: numeric('market_volatility', { precision: 5, scale: 2 }).default('15.00'),
+    inflationRate: numeric('inflation_rate', { precision: 5, scale: 2 }).default('3.00'),
+    timeHorizonYears: integer('time_horizon_years').default(30),
+    iterationCount: integer('iteration_count').default(10000),
+    configuration: jsonb('configuration').default({}), // Custom parameters like spending habits
+    isDefault: boolean('is_default').default(false),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const economicVolatilityIndices = pgTable('economic_volatility_indices', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    indexName: text('index_name').notNull(), // 'VIX', 'CPI', 'FedRates', 'RealEstateIndex'
+    currentValue: numeric('current_value', { precision: 12, scale: 4 }).notNull(),
+    standardDeviation: numeric('standard_deviation', { precision: 12, scale: 4 }),
+    observationDate: timestamp('observation_date').notNull(),
+    source: text('source').default('macro_feed'),
+    metadata: jsonb('metadata').default({}),
+});
 
 // ============================================================================
 // GOVERNANCE & INHERITANCE (ESTATE MANAGEMENT)
@@ -1738,6 +2000,58 @@ export const familyRoles = pgTable('family_roles', {
     assignedAt: timestamp('assigned_at').defaultNow(),
     expiresAt: timestamp('expires_at'),
     isActive: boolean('is_active').default(true),
+});
+
+// ============================================================================
+// INSTITUTIONAL GOVERNANCE & MULTI-RESOLUTION PROTOCOL (#453)
+// ============================================================================
+
+export const shadowEntities = pgTable('shadow_entities', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(), // e.g., "Family Trust", "Wealth LLC"
+    entityType: text('entity_type').notNull(), // 'trust', 'llc', 'family_office'
+    taxId: text('tax_id'),
+    legalAddress: text('legal_address'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const bylawDefinitions = pgTable('bylaw_definitions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    entityId: uuid('entity_id').references(() => shadowEntities.id, { onDelete: 'cascade' }),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    thresholdAmount: numeric('threshold_amount', { precision: 24, scale: 8 }).notNull(),
+    requiredQuorum: doublePrecision('required_quorum').notNull(), // e.g., 0.66 for 2/3
+    votingPeriodHours: integer('voting_period_hours').default(48),
+    autoExecute: boolean('auto_execute').default(true),
+    isActive: boolean('is_active').default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const governanceResolutions = pgTable('governance_resolutions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    bylawId: uuid('bylaw_id').references(() => bylawDefinitions.id, { onDelete: 'cascade' }).notNull(),
+    resolutionType: text('resolution_type').notNull(), // 'spend', 'transfer', 'bylaw_change'
+    status: text('status').default('open'), // 'open', 'passed', 'failed', 'executed'
+    payload: jsonb('payload').notNull(), // The transaction details being proposed
+    votesFor: integer('votes_for').default(0),
+    votesAgainst: integer('votes_against').default(0),
+    totalEligibleVotes: integer('total_eligible_votes').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+    executedAt: timestamp('executed_at'),
+});
+
+export const votingRecords = pgTable('voting_records', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    resolutionId: uuid('resolution_id').references(() => governanceResolutions.id, { onDelete: 'cascade' }).notNull(),
+    vote: text('vote').notNull(), // 'yes', 'no'
+    votedAt: timestamp('voted_at').defaultNow(),
+    reason: text('reason'),
 });
 
 export const familySettings = pgTable('family_settings', {
@@ -1815,10 +2129,12 @@ export const targetAllocations = pgTable('target_allocations', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     portfolioId: uuid('portfolio_id').notNull(), // Links to portfolios table
+    assetType: text('asset_type').default('equity'), // 'equity', 'fixed_income', 'commodity', 'cash', 'crypto'
     symbol: text('symbol').notNull(), // Asset symbol (BTC, AAPL, etc)
     targetPercentage: numeric('target_percentage', { precision: 5, scale: 2 }).notNull(), // e.g. 20.00 for 20%
     toleranceBand: numeric('tolerance_band', { precision: 5, scale: 2 }).default('5.00'), // e.g. 5% drift allowed
     rebalanceFrequency: text('rebalance_frequency').default('monthly'), // monthly, quarterly, yearly
+    isActive: boolean('is_active').default(true),
     lastRebalancedAt: timestamp('last_rebalanced_at'),
     metadata: jsonb('metadata').default({}),
     createdAt: timestamp('created_at').defaultNow(),
@@ -2466,8 +2782,9 @@ export const goalRiskProfiles = pgTable('goal_risk_profiles', {
 export const simulationResults = pgTable('simulation_results', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    resourceId: uuid('resource_id').notNull(), // Goal ID or Portfolio ID
-    resourceType: text('resource_type').notNull(), // 'goal', 'portfolio'
+    scenarioId: uuid('scenario_id').references(() => simulationScenarios.id, { onDelete: 'cascade' }), // For Butterfly Engine
+    resourceId: uuid('resource_id'), // Goal ID or Portfolio ID
+    resourceType: text('resource_type').default('goal'), // 'goal', 'portfolio', 'butterfly'
     simulatedOn: timestamp('simulated_on').defaultNow(),
     p10Value: numeric('p10_value', { precision: 18, scale: 2 }), // Worst case (10th percentile)
     p50Value: numeric('p50_value', { precision: 18, scale: 2 }), // Median (50th percentile)
@@ -2557,6 +2874,7 @@ export const taxLots = pgTable('tax_lots', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }).notNull(),
+    symbol: text('symbol').notNull(),
     quantity: numeric('quantity', { precision: 18, scale: 8 }).notNull(),
     costBasisPerUnit: numeric('cost_basis_per_unit', { precision: 18, scale: 2 }).notNull(),
     acquiredAt: timestamp('acquired_at').notNull(),
@@ -2586,6 +2904,87 @@ export const washSaleLogs = pgTable('wash_sale_logs', {
     disallowedLoss: numeric('disallowed_loss', { precision: 18, scale: 2 }).notNull(),
     replacementLotId: uuid('replacement_lot_id').references(() => taxLots.id),
     metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// ============================================================================
+// AUTOMATED TAX-LOT ACCOUNTING & HIFO INVENTORY VALUATION (#448)
+// ============================================================================
+
+export const taxLotInventory = pgTable('tax_lot_inventory', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+    investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }).notNull(),
+    lotStatus: text('lot_status').default('open'), // 'open', 'closed', 'adjusted', 'split'
+    originalQuantity: numeric('original_quantity', { precision: 18, scale: 8 }).notNull(),
+    remainingQuantity: numeric('remaining_quantity', { precision: 18, scale: 8 }).notNull(),
+    purchasePrice: numeric('purchase_price', { precision: 18, scale: 2 }).notNull(),
+    costBasisPerUnit: numeric('cost_basis_per_unit', { precision: 18, scale: 2 }).notNull(),
+    purchaseDate: timestamp('purchase_date').notNull(),
+    disposalDate: timestamp('disposal_date'),
+    holdingPeriodType: text('holding_period_type'), // 'short_term', 'long_term'
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const costBasisAdjustments = pgTable('cost_basis_adjustments', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    lotId: uuid('lot_id').references(() => taxLotInventory.id, { onDelete: 'cascade' }).notNull(),
+    adjustmentAmount: numeric('adjustment_amount', { precision: 18, scale: 2 }).notNull(),
+    adjustmentType: text('adjustment_type').notNull(), // 'wash_sale', 'dividend_reinvest', 'corporate_action', 'manual'
+    description: text('description'),
+    adjustedAt: timestamp('adjusted_at').defaultNow(),
+    metadata: jsonb('metadata').default({}),
+});
+
+export const liquidationQueues = pgTable('liquidation_queues', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }).notNull(),
+    totalQuantityToLiquidate: numeric('total_quantity_to_liquidate', { precision: 18, scale: 8 }).notNull(),
+    method: text('method').default('HIFO'), // 'FIFO', 'LIFO', 'HIFO', 'SpecificID'
+    status: text('status').default('pending'), // 'pending', 'processing', 'completed', 'failed'
+    priority: integer('priority').default(1),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// ============================================================================
+// REAL-TIME MARGIN MONITORING & LIQUIDITY STRESS TESTING (#447)
+// ============================================================================
+
+export const marginRequirements = pgTable('margin_requirements', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    assetType: text('asset_type').notNull(), // 'equity', 'crypto', 'commodity', 'real_estate'
+    initialMargin: numeric('initial_margin', { precision: 5, scale: 2 }).notNull(), // e.g., 50.00%
+    maintenanceMargin: numeric('maintenance_margin', { precision: 5, scale: 2 }).notNull(), // e.g., 25.00%
+    liquidationThreshold: numeric('liquidation_threshold', { precision: 5, scale: 2 }).notNull(), // e.g., 15.00%
+    isActive: boolean('is_active').default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const collateralSnapshots = pgTable('collateral_snapshots', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    timestamp: timestamp('timestamp').defaultNow(),
+    totalCollateralValue: numeric('total_collateral_value', { precision: 18, scale: 2 }).notNull(),
+    totalOutstandingDebt: numeric('total_outstanding_debt', { precision: 18, scale: 2 }).notNull(),
+    currentLtv: numeric('current_ltv', { precision: 5, scale: 2 }).notNull(),
+    marginStatus: text('margin_status').notNull(), // 'safe', 'warning', 'danger', 'margin_call'
+    excessLiquidity: numeric('excess_liquidity', { precision: 18, scale: 2 }),
+    metadata: jsonb('metadata').default({}),
+});
+
+export const stressTestScenarios = pgTable('stress_test_scenarios', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    scenarioName: text('scenario_name').notNull(), // 'Market Crash - 20%', 'Crypto Winter', 'High Inflation'
+    dropPercentages: jsonb('drop_percentages').notNull(), // e.g., { 'equity': -0.20, 'crypto': -0.50 }
+    description: text('description'),
+    riskLevel: text('risk_level').notNull(), // 'high', 'extreme', 'catastrophic'
     createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -3472,7 +3871,7 @@ export const syntheticVaultMappingsRelations = relations(syntheticVaultMappings,
 // ============================================================================
 // PREDICTIVE LIQUIDITY STRESS-TESTING & AUTONOMOUS INSOLVENCY PREVENTION (#428)
 
-export const stressTestScenarios = pgTable('stress_test_scenarios', {
+export const userStressTestScenarios = pgTable('user_stress_test_scenarios', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     scenarioName: text('scenario_name').notNull(), // '50% Income Drop', 'Flash-Crash', 'Medical Emergency'
@@ -3494,45 +3893,7 @@ export const liquidityVelocityLogs = pgTable('liquidity_velocity_logs', {
 });
 
 // DOUBLE-ENTRY LEDGER SYSTEM & REAL-TIME FX REVALUATION (#432)
-export const ledgerAccounts = pgTable('ledger_accounts', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }), // Map to specific vault if applicable
-    investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }), // Map to investment
-    name: text('name').notNull(),
-    accountType: text('account_type').notNull(), // 'asset', 'liability', 'equity', 'income', 'expense'
-    currency: text('currency').default('USD'),
-    metadata: jsonb('metadata'),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-export const ledgerEntries = pgTable('ledger_entries', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    accountId: uuid('account_id').references(() => ledgerAccounts.id, { onDelete: 'cascade' }).notNull(),
-    transactionId: uuid('transaction_id'), // Link to external transaction logic
-    debit: numeric('debit', { precision: 18, scale: 2 }).default('0.00'),
-    credit: numeric('credit', { precision: 18, scale: 2 }).default('0.00'),
-    currency: text('currency').notNull(),
-    fxRateBase: numeric('fx_rate_base', { precision: 18, scale: 6 }).notNull(), // Rate to USD at time of entry
-    baseAmount: numeric('base_amount', { precision: 18, scale: 2 }).notNull(), // Value in USD at time of entry
-    description: text('description'),
-    entryDate: timestamp('entry_date').defaultNow(),
-    metadata: jsonb('metadata'),
-});
-
-export const fxValuationSnapshots = pgTable('fx_valuation_snapshots', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    accountId: uuid('account_id').references(() => ledgerAccounts.id, { onDelete: 'cascade' }).notNull(),
-    valuationDate: timestamp('valuation_date').defaultNow(),
-    bookValueBase: numeric('book_value_base', { precision: 18, scale: 2 }).notNull(), // Cost basis in USD
-    marketValueBase: numeric('market_value_base', { precision: 18, scale: 2 }).notNull(), // Current value in USD
-    unrealizedGainLoss: numeric('unrealized_gain_loss', { precision: 18, scale: 2 }).notNull(),
-    realizedGainLoss: numeric('realized_gain_loss', { precision: 18, scale: 2 }).default('0.00'),
-    createdAt: timestamp('created_at').defaultNow(),
-});
+// Removed duplicate definitions - using versions defined earlier in schema.js
 
 
 // ============================================================================
@@ -3622,124 +3983,142 @@ export const workflowExecutionLogsRelations = relations(workflowExecutionLogs, (
 export const taxNexusMappingsRelations = relations(taxNexusMappings, ({ one }) => ({
     user: one(users, { fields: [taxNexusMappings.userId], references: [users.id] }),
     entity: one(corporateEntities, { fields: [taxNexusMappings.entityId], references: [corporateEntities.id] }),
-    // ============================================
-    // GAMIFICATION TABLES
-    // ============================================
+}));
+// GAMIFICATION TABLES
+// ============================================
 
-    // Achievement Definitions Table (predefined achievements)
-    export const achievementDefinitions = pgTable('achievement_definitions', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        code: text('code').notNull().unique(),
-        name: text('name').notNull(),
-        description: text('description'),
-        category: text('category').notNull(), // 'savings', 'budgeting', 'goals', 'streaks', 'challenges', 'education'
-        icon: text('icon'),
-        tier: text('tier').notNull().default('bronze'), // 'bronze', 'silver', 'gold', 'platinum', 'diamond'
-        pointsRequired: integer('points_required').default(0),
-        criteria: jsonb('criteria').notNull(), // { type: 'action_count'|'milestone'|'streak'|'score', value: number, metric: string }
-        rewardPoints: integer('reward_points').notNull().default(0),
-        rewardBadge: boolean('reward_badge').default(true),
-        isActive: boolean('is_active').default(true),
-        displayOrder: integer('display_order').default(0),
-        createdAt: timestamp('created_at').defaultNow(),
-        updatedAt: timestamp('updated_at').defaultNow(),
-    });
+// Achievement Definitions Table (predefined achievements)
+export const achievementDefinitions = pgTable('achievement_definitions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    code: text('code').notNull().unique(),
+    name: text('name').notNull(),
+    description: text('description'),
+    category: text('category').notNull(), // 'savings', 'budgeting', 'goals', 'streaks', 'challenges', 'education'
+    icon: text('icon'),
+    tier: text('tier').notNull().default('bronze'), // 'bronze', 'silver', 'gold', 'platinum', 'diamond'
+    pointsRequired: integer('points_required').default(0),
+    criteria: jsonb('criteria').notNull(), // { type: 'action_count'|'milestone'|'streak'|'score', value: number, metric: string }
+    rewardPoints: integer('reward_points').notNull().default(0),
+    rewardBadge: boolean('reward_badge').default(true),
+    isActive: boolean('is_active').default(true),
+    displayOrder: integer('display_order').default(0),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
 
-    // User Achievements Table (tracks earned achievements)
-    export const userAchievements = pgTable('user_achievements', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        achievementId: uuid('achievement_id').references(() => achievementDefinitions.id, { onDelete: 'cascade' }).notNull(),
-        earnedAt: timestamp('earned_at').defaultNow(),
-        progress: integer('progress').default(0),
-        isCompleted: boolean('is_completed').default(false),
-        completedAt: timestamp('completed_at'),
-        metadata: jsonb('metadata').default({}),
-    });
+// User Achievements Table (tracks earned achievements)
+export const userAchievements = pgTable('user_achievements', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    achievementId: uuid('achievement_id').references(() => achievementDefinitions.id, { onDelete: 'cascade' }).notNull(),
+    earnedAt: timestamp('earned_at').defaultNow(),
+    progress: integer('progress').default(0),
+    isCompleted: boolean('is_completed').default(false),
+    completedAt: timestamp('completed_at'),
+    metadata: jsonb('metadata').default({}),
+});
 
-    // User Points System Table
-    export const userPoints = pgTable('user_points', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        totalPoints: integer('total_points').notNull().default(0),
-        lifetimePoints: integer('lifetime_points').notNull().default(0),
-        currentLevel: integer('current_level').notNull().default(1),
-        totalBadges: integer('total_badges').notNull().default(0),
-        currentStreak: integer('current_streak').notNull().default(0),
-        longestStreak: integer('longest_streak').notNull().default(0),
-        lastActivityDate: timestamp('last_activity_date'),
-        weeklyPoints: integer('weekly_points').notNull().default(0),
-        monthlyPoints: integer('monthly_points').notNull().default(0),
-        pointsToNextLevel: integer('points_to_next_level').notNull().default(100),
-        levelProgress: integer('level_progress').notNull().default(0),
-        metadata: jsonb('metadata').default({}),
-        createdAt: timestamp('created_at').defaultNow(),
-        updatedAt: timestamp('updated_at').defaultNow(),
-    });
+// User Points System Table
+export const userPoints = pgTable('user_points', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    totalPoints: integer('total_points').notNull().default(0),
+    lifetimePoints: integer('lifetime_points').notNull().default(0),
+    currentLevel: integer('current_level').notNull().default(1),
+    totalBadges: integer('total_badges').notNull().default(0),
+    currentStreak: integer('current_streak').notNull().default(0),
+    longestStreak: integer('longest_streak').notNull().default(0),
+    lastActivityDate: timestamp('last_activity_date'),
+    weeklyPoints: integer('weekly_points').notNull().default(0),
+    monthlyPoints: integer('monthly_points').notNull().default(0),
+    pointsToNextLevel: integer('points_to_next_level').notNull().default(100),
+    levelProgress: integer('level_progress').notNull().default(0),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
 
-    // Points History Table (transaction log)
-    export const pointsHistory = pgTable('points_history', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        points: integer('points').notNull(),
-        actionType: text('action_type').notNull(), // 'achievement_earned', 'challenge_completed', 'goal_reached', 'daily_login', etc.
-        description: text('description'),
-        referenceId: uuid('reference_id'), // Optional reference to related entity
-        createdAt: timestamp('created_at').defaultNow(),
-    });
+// Points History Table (transaction log)
+export const pointsHistory = pgTable('points_history', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    points: integer('points').notNull(),
+    actionType: text('action_type').notNull(), // 'achievement_earned', 'challenge_completed', 'goal_reached', 'daily_login', etc.
+    description: text('description'),
+    referenceId: uuid('reference_id'), // Optional reference to related entity
+    createdAt: timestamp('created_at').defaultNow(),
+});
 
-    // User Streaks Table
-    export const userStreaks = pgTable('user_streaks', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        streakType: text('streak_type').notNull(), // 'daily_login', 'budget_adherence', 'savings_contribution', 'expense_log'
-        currentCount: integer('current_count').notNull().default(0),
-        longestCount: integer('longest_count').notNull().default(0),
-        startDate: timestamp('start_date'),
-        lastActivityDate: timestamp('last_activity_date'),
-        isActive: boolean('is_active').default(true),
-        metadata: jsonb('metadata').default({}),
-        createdAt: timestamp('created_at').defaultNow(),
-        updatedAt: timestamp('updated_at').defaultNow(),
-    });
+// User Streaks Table
+export const userStreaks = pgTable('user_streaks', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    streakType: text('streak_type').notNull(), // 'daily_login', 'budget_adherence', 'savings_contribution', 'expense_log'
+    currentCount: integer('current_count').notNull().default(0),
+    longestCount: integer('longest_count').notNull().default(0),
+    startDate: timestamp('start_date'),
+    lastActivityDate: timestamp('last_activity_date'),
+    isActive: boolean('is_active').default(true),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
 
-    // Relations for Gamification Tables
-    export const achievementDefinitionsRelations = relations(achievementDefinitions, ({ many }) => ({
-        userAchievements: many(userAchievements),
-    }));
+// Relations for Gamification Tables
+export const achievementDefinitionsRelations = relations(achievementDefinitions, ({ many }) => ({
+    userAchievements: many(userAchievements),
+}));
 
-    export const userAchievementsRelations = relations(userAchievements, ({ one }) => ({
-        user: one(users, {
-            fields: [userAchievements.userId],
-            references: [users.id],
-        }),
-        achievement: one(achievementDefinitions, {
-            fields: [userAchievements.achievementId],
-            references: [achievementDefinitions.id],
-        }),
-    }));
+export const userAchievementsRelations = relations(userAchievements, ({ one }) => ({
+    user: one(users, {
+        fields: [userAchievements.userId],
+        references: [users.id],
+    }),
+    achievement: one(achievementDefinitions, {
+        fields: [userAchievements.achievementId],
+        references: [achievementDefinitions.id],
+    }),
+}));
 
-    export const userPointsRelations = relations(userPoints, ({ one }) => ({
-        user: one(users, {
-            fields: [userPoints.userId],
-            references: [users.id],
-        }),
-    }));
+export const userPointsRelations = relations(userPoints, ({ one }) => ({
+    user: one(users, {
+        fields: [userPoints.userId],
+        references: [users.id],
+    }),
+}));
 
-    export const pointsHistoryRelations = relations(pointsHistory, ({ one }) => ({
-        user: one(users, {
-            fields: [pointsHistory.userId],
-            references: [users.id],
-        }),
-    }));
+export const pointsHistoryRelations = relations(pointsHistory, ({ one }) => ({
+    user: one(users, {
+        fields: [pointsHistory.userId],
+        references: [users.id],
+    }),
+}));
 
-    export const userStreaksRelations = relations(userStreaks, ({ one }) => ({
-        user: one(users, {
-            fields: [userStreaks.userId],
-            references: [users.id],
-        }),
-    }));
+export const userStreaksRelations = relations(userStreaks, ({ one }) => ({
+    user: one(users, {
+        fields: [userStreaks.userId],
+        references: [users.id],
+    }),
+}));
 
+// ============================================================================
+// REAL-TIME MULTI-PARTY TRUST & ESCROW SETTLEMENT PROTOCOL (#443)
+// ============================================================================
+
+export const escrowContracts = pgTable('escrow_contracts', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    creatorId: uuid('creator_id').references(() => users.id).notNull(),
+    payerId: uuid('payer_id').references(() => users.id).notNull(),
+    payeeId: uuid('payee_id').references(() => users.id).notNull(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    amount: numeric('amount', { precision: 18, scale: 2 }).notNull(),
+    currency: text('currency').default('USD'),
+    status: text('status').default('draft'), // 'draft', 'active', 'locked', 'released', 'refunded', 'disputed'
+    escrowType: text('escrow_type').notNull(), // 'p2p_lending', 'real_estate', 'succession', 'service_delivery'
+    releaseConditions: jsonb('release_conditions').notNull(), // e.g., { type: 'oracle_event', eventId: '...', requiredSignatures: 2 }
+    disputeResolution: text('dispute_resolution').default('arbitration'),
+    expiresAt: timestamp('expires_at'),
     // ============================================
     // INVESTMENT PORTFOLIO ANALYZER TABLES
     // ============================================
@@ -3791,275 +4170,350 @@ export const taxNexusMappingsRelations = relations(taxNexusMappings, ({ one }) =
         updatedAt: timestamp('updated_at').defaultNow(),
     });
 
-    // Investment Recommendations Table
-    export const investmentRecommendations = pgTable('investment_recommendations', {
+    export const oracleEvents = pgTable('oracle_events', {
         id: uuid('id').defaultRandom().primaryKey(),
+        eventType: text('event_type').notNull(), // 'property_registration', 'death_certificate', 'loan_repayment_external'
+        eventSource: text('event_source').notNull(), // 'county_clerk', 'vital_statistics', 'plaid_webhook'
+        externalId: text('external_id').notNull(), // Reference ID from source
+        eventData: jsonb('event_data'),
+        status: text('status').default('detected'), // 'detected', 'verified', 'processed', 'ignored'
+        verifiedAt: timestamp('verified_at'),
+        metadata: jsonb('metadata'),
+        createdAt: timestamp('created_at').defaultNow(),
+    });
+
+    export const escrowSignatures = pgTable('escrow_signatures', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        escrowId: uuid('escrow_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+        signerId: uuid('signer_id').references(() => users.id).notNull(),
+        signature: text('signature').notNull(), // Cryptographic signature
+        publicKey: text('public_key'),
+        signedData: text('signed_data'), // The payload that was signed
+        status: text('status').default('valid'),
+        signedAt: timestamp('signed_at').defaultNow(),
+    });
+
+    export const vaultLocks = pgTable('vault_locks', {
+        id: uuid('id').defaultRandom().primaryKey(),
+        vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
         userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
-
-        // Recommendation Details
-        recommendationType: text('recommendation_type').notNull(), // buy, sell, hold, diversify, rebalance
-        assetSymbol: text('asset_symbol'),
-        assetName: text('asset_name'),
-        assetType: text('asset_type'), // stock, etf, mutual_fund, bond, crypto
-
-        // Reasoning
-        reasoning: text('reasoning').notNull(),
-        reasoningFactors: jsonb('reasoning_factors').default([]),
-
-        // Metrics
-        expectedReturn: numeric('expected_return', { precision: 8, scale: 4 }),
-        riskLevel: text('risk_level').notNull(), // low, medium, high
-        confidenceScore: numeric('confidence_score', { precision: 5, scale: 2 }), // 0-100
-        timeHorizon: text('time_horizon'), // short, medium, long
-
-        // Priority and Status
-        priority: text('priority').default('medium'), // low, medium, high
-        status: text('status').default('active'), // active, dismissed, implemented
+        amount: numeric('amount', { precision: 18, scale: 2 }).notNull(),
+        lockType: text('lock_type').notNull(), // 'escrow', 'lien', 'security_deposit'
+        referenceType: text('reference_type'), // 'escrow_contract', 'loan'
+        referenceId: uuid('reference_id'),
+        status: text('status').default('active'), // 'active', 'released', 'void'
         expiresAt: timestamp('expires_at'),
+        metadata: jsonb('metadata'),
+        // Investment Recommendations Table
+        export const investmentRecommendations = pgTable('investment_recommendations', {
+            id: uuid('id').defaultRandom().primaryKey(),
+            userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+            portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
 
-        // Financial Impact
-        suggestedAmount: numeric('suggested_amount', { precision: 15, scale: 2 }),
-        potentialGainLoss: numeric('potential_gain_loss', { precision: 15, scale: 2 }),
+            // Recommendation Details
+            recommendationType: text('recommendation_type').notNull(), // buy, sell, hold, diversify, rebalance
+            assetSymbol: text('asset_symbol'),
+            assetName: text('asset_name'),
+            assetType: text('asset_type'), // stock, etf, mutual_fund, bond, crypto
 
-        // AI Metadata
-        modelVersion: text('model_version'),
-        analysisData: jsonb('analysis_data').default({}),
+            // Reasoning
+            reasoning: text('reasoning').notNull(),
+            reasoningFactors: jsonb('reasoning_factors').default([]),
 
-        isRead: boolean('is_read').default(false),
-        readAt: timestamp('read_at'),
+            // Metrics
+            expectedReturn: numeric('expected_return', { precision: 8, scale: 4 }),
+            riskLevel: text('risk_level').notNull(), // low, medium, high
+            confidenceScore: numeric('confidence_score', { precision: 5, scale: 2 }), // 0-100
+            timeHorizon: text('time_horizon'), // short, medium, long
 
-        createdAt: timestamp('created_at').defaultNow(),
-        updatedAt: timestamp('updated_at').defaultNow(),
-    });
+            // Priority and Status
+            priority: text('priority').default('medium'), // low, medium, high
+            status: text('status').default('active'), // active, dismissed, implemented
+            expiresAt: timestamp('expires_at'),
 
-    // Portfolio Rebalancing History Table
-    export const portfolioRebalancing = pgTable('portfolio_rebalancing', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+            // Financial Impact
+            suggestedAmount: numeric('suggested_amount', { precision: 15, scale: 2 }),
+            potentialGainLoss: numeric('potential_gain_loss', { precision: 15, scale: 2 }),
 
-        // Rebalancing Details
-        rebalanceType: text('rebalance_type').notNull(), // automatic, suggested, manual
-        triggerReason: text('trigger_reason'), // threshold_exceeded, time_based, optimization, manual
+            // AI Metadata
+            modelVersion: text('model_version'),
+            analysisData: jsonb('analysis_data').default({}),
 
-        // Before State
-        beforeAllocation: jsonb('before_allocation').notNull(),
-        beforeValue: numeric('before_value', { precision: 15, scale: 2 }).notNull(),
+            isRead: boolean('is_read').default(false),
+            readAt: timestamp('read_at'),
 
-        // After State
-        afterAllocation: jsonb('after_allocation'),
-        afterValue: numeric('after_value', { precision: 15, scale: 2 }),
+            createdAt: timestamp('created_at').defaultNow(),
+            updatedAt: timestamp('updated_at').defaultNow(),
+        });
 
-        // Actions Taken
-        actions: jsonb('actions').default([]),
+        // Portfolio Rebalancing History Table
+        export const portfolioRebalancing = pgTable('portfolio_rebalancing', {
+            id: uuid('id').defaultRandom().primaryKey(),
+            userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+            portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
 
-        // Status
-        status: text('status').default('pending'), // pending, completed, cancelled
-        completedAt: timestamp('completed_at'),
+            // Rebalancing Details
+            rebalanceType: text('rebalance_type').notNull(), // automatic, suggested, manual
+            triggerReason: text('trigger_reason'), // threshold_exceeded, time_based, optimization, manual
 
-        // Metrics
-        expectedImprovement: numeric('expected_improvement', { precision: 8, scale: 4 }),
-        actualImprovement: numeric('actual_improvement', { precision: 8, scale: 4 }),
+            // Before State
+            beforeAllocation: jsonb('before_allocation').notNull(),
+            beforeValue: numeric('before_value', { precision: 15, scale: 2 }).notNull(),
 
-        notes: text('notes'),
-        createdAt: timestamp('created_at').defaultNow(),
-        updatedAt: timestamp('updated_at').defaultNow(),
-    });
+            // After State
+            afterAllocation: jsonb('after_allocation'),
+            afterValue: numeric('after_value', { precision: 15, scale: 2 }),
 
-    // Relations for Investment Portfolio Analyzer Tables
-    export const investmentRiskProfilesRelations = relations(investmentRiskProfiles, ({ one, many }) => ({
-        user: one(users, {
-            fields: [investmentRiskProfiles.userId],
-            references: [users.id],
-        }),
-    }));
+            // Actions Taken
+            actions: jsonb('actions').default([]),
 
-    export const investmentRecommendationsRelations = relations(investmentRecommendations, ({ one }) => ({
-        user: one(users, {
-            fields: [investmentRecommendations.userId],
-            references: [users.id],
-        }),
-        portfolio: one(portfolios, {
-            fields: [investmentRecommendations.portfolioId],
-            references: [portfolios.id],
-        }),
-    }));
+            // Status
+            status: text('status').default('pending'), // pending, completed, cancelled
+            completedAt: timestamp('completed_at'),
 
-    export const portfolioRebalancingRelations = relations(portfolioRebalancing, ({ one }) => ({
-        user: one(users, {
-            fields: [portfolioRebalancing.userId],
-            references: [users.id],
-        }),
-        portfolio: one(portfolios, {
-            fields: [portfolioRebalancing.portfolioId],
-            references: [portfolios.id],
-        }),
-    }));
+            // Metrics
+            expectedImprovement: numeric('expected_improvement', { precision: 8, scale: 4 }),
+            actualImprovement: numeric('actual_improvement', { precision: 8, scale: 4 }),
 
-    // Update users relations to include new tables
-    export const usersRelations = relations(users, ({ many }) => ({
-        categories: many(categories),
-        expenses: many(expenses),
-        goals: many(goals),
-        deviceSessions: many(deviceSessions),
-        vaultMemberships: many(vaultMembers),
-        ownedVaults: many(vaults),
-        securityEvents: many(securityEvents),
-        reports: many(reports),
-        budgetAlerts: many(budgetAlerts),
-        portfolios: many(portfolios),
-        subscriptions: many(subscriptions),
-        bills: many(bills),
-        debts: many(debts),
-        debtPayments: many(debtPayments),
-        expenseShares: many(expenseShares),
-        sentReimbursements: many(reimbursements, { relationName: 'reimbursements_from' }),
-        receivedReimbursements: many(reimbursements, { relationName: 'reimbursements_to' }),
-        bankAccounts: many(bankAccounts),
-        bankTransactions: many(bankTransactions),
-        emergencyFundGoals: many(emergencyFundGoals),
-        creditScores: many(creditScores),
-        creditScoreAlerts: many(creditScoreAlerts),
-        billNegotiations: many(billNegotiation),
-        negotiationAttempts: many(negotiationAttempts),
-        investmentRiskProfiles: many(investmentRiskProfiles),
-        investmentRecommendations: many(investmentRecommendations),
-        autopilotWorkflows: many(autopilotWorkflows),
-        workflowExecutionLogs: many(workflowExecutionLogs),
-    }));
+            notes: text('notes'),
+            createdAt: timestamp('created_at').defaultNow(),
+            updatedAt: timestamp('updated_at').defaultNow(),
+        });
 
-    // ============================================================================
-    // AUTONOMOUS "FINANCIAL AUTOPILOT" & EVENT-DRIVEN WORKFLOW ORCHESTRATOR (#461)
-    // ============================================================================
+        // ESCROW PROTOCOL RELATIONS
+        export const escrowContractsRelations = relations(escrowContracts, ({ one, many }) => ({
+            user: one(users, { fields: [escrowContracts.userId], references: [users.id] }),
+            creator: one(users, { fields: [escrowContracts.creatorId], references: [users.id] }),
+            payer: one(users, { fields: [escrowContracts.payerId], references: [users.id] }),
+            payee: one(users, { fields: [escrowContracts.payeeId], references: [users.id] }),
+            vault: one(vaults, { fields: [escrowContracts.vaultId], references: [vaults.id] }),
+            signatures: many(escrowSignatures),
+        }));
 
-    /**
-     * Autopilot Workflows - User-defined state machines for autonomous money management.
-     * Each workflow has conditions (triggers) and a set of sequential actions to execute.
-     */
-    export const autopilotWorkflows = pgTable('autopilot_workflows', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        name: text('name').notNull(),
-        description: text('description'),
-        // 'active', 'paused', 'draft', 'archived'
-        status: text('status').default('draft').notNull(),
-        // 'AND' = all triggers must fire, 'OR' = any trigger fires
-        triggerLogic: text('trigger_logic').default('AND').notNull(),
-        // The entity domain this workflow primarily operates on
-        // 'VAULT', 'EXPENSE', 'INVESTMENT', 'DEBT', 'GOVERNANCE', 'MACRO'
-        domain: text('domain').notNull(),
-        // Execution priority (higher = runs first when multiple workflows fire at once)
-        priority: integer('priority').default(0),
-        // Cooldown period in minutes to prevent rapid re-execution
-        cooldownMinutes: integer('cooldown_minutes').default(60),
-        lastExecutedAt: timestamp('last_executed_at'),
-        executionCount: integer('execution_count').default(0),
-        // Optional: max number of times this workflow can auto-execute
-        maxExecutions: integer('max_executions'),
-        // DSL definition for complex compound conditions (stored as structured JSON)
-        dslDefinition: jsonb('dsl_definition').default({}),
-        metadata: jsonb('metadata').default({}),
-        createdAt: timestamp('created_at').defaultNow(),
-        updatedAt: timestamp('updated_at').defaultNow(),
-    }, (table) => ({
-        userIdx: index('idx_autopilot_user').on(table.userId),
-        statusIdx: index('idx_autopilot_status').on(table.status),
-        domainIdx: index('idx_autopilot_domain').on(table.domain),
-    }));
+        export const oracleEventsRelations = relations(oracleEvents, ({ many }) => ({
+            linkedContracts: many(escrowContracts),
+        }));
 
-    /**
-     * Workflow Triggers - Condition definitions that "watch" financial variables.
-     * Each trigger monitors a specific metric and evaluates a comparison expression.
-     */
-    export const workflowTriggers = pgTable('workflow_triggers', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
-        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        // The financial variable to monitor:
-        // 'cash_reserve', 'portfolio_volatility', 'debt_apr', 'tax_liability',
-        // 'vault_balance', 'expense_total', 'macro_vix', 'governance_quorum'
-        variable: text('variable').notNull(),
-        // Comparison operator: '>', '<', '>=', '<=', '=='
-        operator: text('operator').notNull(),
-        // The threshold value to compare against
-        thresholdValue: numeric('threshold_value', { precision: 24, scale: 8 }).notNull(),
-        // Optional: scope the trigger to a specific vault or entity
-        scopeVaultId: uuid('scope_vault_id').references(() => vaults.id, { onDelete: 'set null' }),
-        // Whether this trigger condition is currently satisfied
-        currentStatus: boolean('current_status').default(false),
-        lastCheckedAt: timestamp('last_checked_at').defaultNow(),
-        lastValueObserved: numeric('last_value_observed', { precision: 24, scale: 8 }),
-        createdAt: timestamp('created_at').defaultNow(),
-    }, (table) => ({
-        workflowIdx: index('idx_trigger_workflow').on(table.workflowId),
-        userIdx: index('idx_trigger_user').on(table.userId),
-        variableIdx: index('idx_trigger_variable').on(table.variable),
-    }));
+        export const escrowSignaturesRelations = relations(escrowSignatures, ({ one }) => ({
+            escrow: one(escrowContracts, { fields: [escrowSignatures.escrowId], references: [escrowContracts.id] }),
+            signer: one(users, { fields: [escrowSignatures.signerId], references: [users.id] }),
+        }));
 
-    /**
-     * Workflow Actions - The ordered steps to execute when a workflow fires.
-     * Actions run sequentially (by stepOrder) and support rollback on failure.
-     */
-    export const workflowActions = pgTable('workflow_actions', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
-        // Step ordering (1, 2, 3...)
-        stepOrder: integer('step_order').notNull(),
-        // Action type: 'SWEEP_VAULT', 'REBALANCE', 'HARVEST_LOSSES', 'ALERT',
-        //              'GOVERNANCE_VOTE', 'DEBT_PAYOFF', 'EXPENSE_CAP', 'FX_SWAP'
-        actionType: text('action_type').notNull(),
-        // Parameters for the action (e.g., { fromVaultId, toVaultId, percentage })
-        parameters: jsonb('parameters').default({}),
-        // Whether to abort the entire workflow if this step fails
-        abortOnFailure: boolean('abort_on_failure').default(true),
-        // 'pending', 'success', 'failed', 'skipped', 'rolled_back'
-        lastRunStatus: text('last_run_status').default('pending'),
-        createdAt: timestamp('created_at').defaultNow(),
-    }, (table) => ({
-        workflowStepIdx: index('idx_action_workflow_step').on(table.workflowId, table.stepOrder),
-    }));
+        export const vaultLocksRelations = relations(vaultLocks, ({ one }) => ({
+            vault: one(vaults, { fields: [vaultLocks.vaultId], references: [vaults.id] }),
+            user: one(users, { fields: [vaultLocks.userId], references: [users.id] }),
+        }));
 
-    /**
-     * Workflow Execution Logs - Immutable audit trail of every autopilot run.
-     */
-    export const workflowExecutionLogs = pgTable('workflow_execution_logs', {
-        id: uuid('id').defaultRandom().primaryKey(),
-        userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-        workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
-        // Which event fired this execution
-        triggerEvent: text('trigger_event'),
-        // 'success', 'partial', 'failed', 'skipped_cooldown', 'skipped_max_executions'
-        resultStatus: text('result_status').notNull(),
-        // Snapshot of trigger values at time of execution
-        triggerSnapshot: jsonb('trigger_snapshot').default({}),
-        // Results of each action step
-        actionResults: jsonb('action_results').default([]),
-        // Human-readable description of what happened
-        summary: text('summary'),
-        executedAt: timestamp('executed_at').defaultNow(),
-        durationMs: integer('duration_ms'),
-    });
+        export const escrowDisputes = pgTable('escrow_disputes', {
+            id: uuid('id').defaultRandom().primaryKey(),
+            escrowId: uuid('escrow_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+            initiatorId: uuid('initiator_id').references(() => users.id).notNull(),
+            reason: text('reason').notNull(),
+            evidence: jsonb('evidence'),
+            status: text('status').default('open'), // 'open', 'resolved', 'arbitration_pending'
+            resolution: text('resolution'), // 'refund_to_payer', 'release_to_payee', 'split'
+            resolvedAt: timestamp('resolved_at'),
+            metadata: jsonb('metadata'),
+            createdAt: timestamp('created_at').defaultNow(),
+            updatedAt: timestamp('updated_at').defaultNow(),
+        });
 
-    // Relations for autopilot tables
-    export const autopilotWorkflowsRelations = relations(autopilotWorkflows, ({ one, many }) => ({
-        user: one(users, { fields: [autopilotWorkflows.userId], references: [users.id] }),
-        triggers: many(workflowTriggers),
-        actions: many(workflowActions),
-        executionLogs: many(workflowExecutionLogs),
-    }));
+        export const escrowDisputesRelations = relations(escrowDisputes, ({ one }) => ({
+            escrow: one(escrowContracts, { fields: [escrowDisputes.escrowId], references: [escrowContracts.id] }),
+            initiator: one(users, { fields: [escrowDisputes.initiatorId], references: [users.id] }),
+            // Relations for Investment Portfolio Analyzer Tables
+            export const investmentRiskProfilesRelations = relations(investmentRiskProfiles, ({ one, many }) => ({
+                user: one(users, {
+                    fields: [investmentRiskProfiles.userId],
+                    references: [users.id],
+                }),
+            }));
 
-    export const workflowTriggersRelations = relations(workflowTriggers, ({ one }) => ({
-        workflow: one(autopilotWorkflows, { fields: [workflowTriggers.workflowId], references: [autopilotWorkflows.id] }),
-        user: one(users, { fields: [workflowTriggers.userId], references: [users.id] }),
-        vault: one(vaults, { fields: [workflowTriggers.scopeVaultId], references: [vaults.id] }),
-    }));
+            export const investmentRecommendationsRelations = relations(investmentRecommendations, ({ one }) => ({
+                user: one(users, {
+                    fields: [investmentRecommendations.userId],
+                    references: [users.id],
+                }),
+                portfolio: one(portfolios, {
+                    fields: [investmentRecommendations.portfolioId],
+                    references: [portfolios.id],
+                }),
+            }));
 
-    export const workflowActionsRelations = relations(workflowActions, ({ one }) => ({
-        workflow: one(autopilotWorkflows, { fields: [workflowActions.workflowId], references: [autopilotWorkflows.id] }),
-    }));
+            export const portfolioRebalancingRelations = relations(portfolioRebalancing, ({ one }) => ({
+                user: one(users, {
+                    fields: [portfolioRebalancing.userId],
+                    references: [users.id],
+                }),
+                portfolio: one(portfolios, {
+                    fields: [portfolioRebalancing.portfolioId],
+                    references: [portfolios.id],
+                }),
+            }));
 
-    export const workflowExecutionLogsRelations = relations(workflowExecutionLogs, ({ one }) => ({
-        user: one(users, { fields: [workflowExecutionLogs.userId], references: [users.id] }),
-        workflow: one(autopilotWorkflows, { fields: [workflowExecutionLogs.workflowId], references: [autopilotWorkflows.id] }),
-    }));
+            export const taxLossOpportunitiesRelations = relations(taxLossOpportunities, ({ one }) => ({
+                user: one(users, { fields: [taxLossOpportunities.userId], references: [users.id] }),
+                portfolio: one(portfolios, { fields: [taxLossOpportunities.portfolioId], references: [portfolios.id] }),
+                investment: one(investments, { fields: [taxLossOpportunities.investmentId], references: [investments.id] }),
+            }));
+
+            export const washSaleViolationsRelations = relations(washSaleViolations, ({ one }) => ({
+                user: one(users, { fields: [washSaleViolations.userId], references: [users.id] }),
+                investment: one(investments, { fields: [washSaleViolations.investmentId], references: [investments.id] }),
+            }));
+
+            // Update users relations to include new tables - DELETED DUPLICATE
+
+            export const taxLotInventoryRelations = relations(taxLotInventory, ({ one, many }) => ({
+                user: one(users, { fields: [taxLotInventory.userId], references: [users.id] }),
+                portfolio: one(portfolios, { fields: [taxLotInventory.portfolioId], references: [portfolios.id] }),
+                investment: one(investments, { fields: [taxLotInventory.investmentId], references: [investments.id] }),
+                adjustments: many(costBasisAdjustments),
+            }));
+
+            export const costBasisAdjustmentsRelations = relations(costBasisAdjustments, ({ one }) => ({
+                lot: one(taxLotInventory, { fields: [costBasisAdjustments.lotId], references: [taxLotInventory.id] }),
+            }));
+
+            export const liquidationQueuesRelations = relations(liquidationQueues, ({ many, one }) => ({
+                user: one(users, { fields: [liquidationQueues.userId], references: [users.id] }),
+                investment: one(investments, { fields: [liquidationQueues.investmentId], references: [investments.id] }),
+            }));
+
+            export const marginRequirementsRelations = relations(marginRequirements, ({ one }) => ({
+                user: one(users, { fields: [marginRequirements.userId], references: [users.id] }),
+            }));
+
+            export const collateralSnapshotsRelations = relations(collateralSnapshots, ({ one }) => ({
+                user: one(users, { fields: [collateralSnapshots.userId], references: [users.id] }),
+            }));
+
+            export const liquidityPoolsRelations = relations(liquidityPools, ({ one }) => ({
+                user: one(users, { fields: [liquidityPools.userId], references: [users.id] }),
+            }));
+
+            export const internalClearingLogsRelations = relations(internalClearingLogs, ({ one }) => ({
+                user: one(users, { fields: [internalClearingLogs.userId], references: [users.id] }),
+                fromVault: one(vaults, { fields: [internalClearingLogs.fromVaultId], references: [vaults.id] }),
+                toVault: one(vaults, { fields: [internalClearingLogs.toVaultId], references: [vaults.id] }),
+            }));
+
+            export const fxSettlementInstructionsRelations = relations(fxSettlementInstructions, ({ one }) => ({
+                user: one(users, { fields: [fxSettlementInstructions.userId], references: [users.id] }),
+            }));
+
+            export const shadowEntitiesRelations = relations(shadowEntities, ({ one, many }) => ({
+                user: one(users, { fields: [shadowEntities.userId], references: [users.id] }),
+                bylaws: many(bylawDefinitions),
+            }));
+
+            export const bylawDefinitionsRelations = relations(bylawDefinitions, ({ one, many }) => ({
+                entity: one(shadowEntities, { fields: [bylawDefinitions.entityId], references: [shadowEntities.id] }),
+                vault: one(vaults, { fields: [bylawDefinitions.vaultId], references: [vaults.id] }),
+                resolutions: many(governanceResolutions),
+            }));
+
+            export const governanceResolutionsRelations = relations(governanceResolutions, ({ one, many }) => ({
+                user: one(users, { fields: [governanceResolutions.userId], references: [users.id] }),
+                bylaw: one(bylawDefinitions, { fields: [governanceResolutions.bylawId], references: [bylawDefinitions.id] }),
+                votes: many(votingRecords),
+            }));
+
+            export const votingRecordsRelations = relations(votingRecords, ({ one }) => ({
+                user: one(users, { fields: [votingRecords.userId], references: [users.id] }),
+                resolution: one(governanceResolutions, { fields: [votingRecords.resolutionId], references: [governanceResolutions.id] }),
+            }));
+
+            // ============================================================================
+            // AUTONOMOUS "FINANCIAL AUTOPILOT" & EVENT-DRIVEN WORKFLOW ORCHESTRATOR (#461)
+            // ============================================================================
+
+            export const autopilotWorkflows = pgTable('autopilot_workflows', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+                name: text('name').notNull(),
+                description: text('description'),
+                status: text('status').default('draft').notNull(), // 'active', 'paused', 'draft', 'archived'
+                triggerLogic: text('trigger_logic').default('AND').notNull(), // 'AND' | 'OR'
+                domain: text('domain').notNull(), // 'VAULT','EXPENSE','INVESTMENT','DEBT','GOVERNANCE','MACRO'
+                priority: integer('priority').default(0),
+                cooldownMinutes: integer('cooldown_minutes').default(60),
+                lastExecutedAt: timestamp('last_executed_at'),
+                executionCount: integer('execution_count').default(0),
+                maxExecutions: integer('max_executions'),
+                dslDefinition: jsonb('dsl_definition').default({}),
+                metadata: jsonb('metadata').default({}),
+                createdAt: timestamp('created_at').defaultNow(),
+                updatedAt: timestamp('updated_at').defaultNow(),
+            }, (table) => ({
+                userIdx: index('idx_autopilot_user').on(table.userId),
+                statusIdx: index('idx_autopilot_status').on(table.status),
+                domainIdx: index('idx_autopilot_domain').on(table.domain),
+            }));
+
+            export const workflowTriggers = pgTable('workflow_triggers', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+                userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+                variable: text('variable').notNull(),
+                operator: text('operator').notNull(),
+                thresholdValue: numeric('threshold_value', { precision: 24, scale: 8 }).notNull(),
+                scopeVaultId: uuid('scope_vault_id').references(() => vaults.id, { onDelete: 'set null' }),
+                currentStatus: boolean('current_status').default(false),
+                lastCheckedAt: timestamp('last_checked_at').defaultNow(),
+                lastValueObserved: numeric('last_value_observed', { precision: 24, scale: 8 }),
+                createdAt: timestamp('created_at').defaultNow(),
+            }, (table) => ({
+                workflowIdx: index('idx_trigger_workflow').on(table.workflowId),
+                userIdx: index('idx_trigger_user').on(table.userId),
+                variableIdx: index('idx_trigger_variable').on(table.variable),
+            }));
+
+            export const workflowActions = pgTable('workflow_actions', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+                stepOrder: integer('step_order').notNull(),
+                actionType: text('action_type').notNull(),
+                parameters: jsonb('parameters').default({}),
+                abortOnFailure: boolean('abort_on_failure').default(true),
+                lastRunStatus: text('last_run_status').default('pending'),
+                createdAt: timestamp('created_at').defaultNow(),
+            }, (table) => ({
+                workflowStepIdx: index('idx_action_workflow_step').on(table.workflowId, table.stepOrder),
+            }));
+
+            export const workflowExecutionLogs = pgTable('workflow_execution_logs', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+                workflowId: uuid('workflow_id').references(() => autopilotWorkflows.id, { onDelete: 'cascade' }).notNull(),
+                triggerEvent: text('trigger_event'),
+                resultStatus: text('result_status').notNull(),
+                triggerSnapshot: jsonb('trigger_snapshot').default({}),
+                actionResults: jsonb('action_results').default([]),
+                summary: text('summary'),
+                executedAt: timestamp('executed_at').defaultNow(),
+                durationMs: integer('duration_ms'),
+            });
+
+            // Autopilot relations
+            export const autopilotWorkflowsRelations = relations(autopilotWorkflows, ({ one, many }) => ({
+                user: one(users, { fields: [autopilotWorkflows.userId], references: [users.id] }),
+                triggers: many(workflowTriggers),
+                actions: many(workflowActions),
+                executionLogs: many(workflowExecutionLogs),
+            }));
+
+            export const workflowTriggersRelations = relations(workflowTriggers, ({ one }) => ({
+                workflow: one(autopilotWorkflows, { fields: [workflowTriggers.workflowId], references: [autopilotWorkflows.id] }),
+                user: one(users, { fields: [workflowTriggers.userId], references: [users.id] }),
+                vault: one(vaults, { fields: [workflowTriggers.scopeVaultId], references: [vaults.id] }),
+            }));
+
+            export const workflowActionsRelations = relations(workflowActions, ({ one }) => ({
+                workflow: one(autopilotWorkflows, { fields: [workflowActions.workflowId], references: [autopilotWorkflows.id] }),
+            }));
+
+            export const workflowExecutionLogsRelations = relations(workflowExecutionLogs, ({ one }) => ({
+                user: one(users, { fields: [workflowExecutionLogs.userId], references: [users.id] }),
+                workflow: one(autopilotWorkflows, { fields: [workflowExecutionLogs.workflowId], references: [autopilotWorkflows.id] }),
+            }));

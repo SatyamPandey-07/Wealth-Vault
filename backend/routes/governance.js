@@ -1,14 +1,11 @@
 import express from 'express';
-import { body, param, query } from 'express-validator';
 import { protect } from '../middleware/auth.js';
-import { asyncHandler } from '../middleware/errorHandler.js';
-import governanceService from '../services/governanceService.js';
-import successionService from '../services/successionService.js';
-import { ApiResponse } from '../utils/ApiResponse.js';
-import { AppError } from '../utils/AppError.js';
+import governanceEngine from '../services/governanceEngine.js';
 import db from '../config/db.js';
-import { assetStepUpLogs, marketAnomalyDefinitions, syntheticVaultMappings, hedgeExecutionHistory, vaults, autopilotWorkflows, workflowTriggers, workflowExecutionLogs } from '../db/schema.js';
+import { assetStepUpLogs, marketAnomalyDefinitions, syntheticVaultMappings, hedgeExecutionHistory, vaults, autopilotWorkflows, workflowTriggers, workflowExecutionLogs, governanceResolutions, shadowEntities, bylawDefinitions, votingRecords } from '../db/schema.js';
 import { eq, and, desc, sql } from 'drizzle-orm';
+import asyncHandler from 'express-async-handler';
+import { ApiResponse } from '../utils/ApiResponse.js';
 import shieldService from '../services/shieldService.js';
 import riskEngine from '../services/riskEngine.js';
 import anomalyScanner from '../services/anomalyScanner.js';
@@ -19,18 +16,22 @@ import { signalAutopilot } from '../middleware/triggerInterceptor.js';
 const router = express.Router();
 
 /**
+ * @desc Create a shadow entity (Trust, LLC, etc.)
+ * @route POST /api/governance/entities
+ */
+router.post('/entities', protect, asyncHandler(async (req, res) => {
+    const { name, entityType, taxId, legalAddress } = req.body;
+    const [entity] = await db.insert(shadowEntities).values({ userId: req.user.id, name, entityType, taxId, legalAddress }).returning();
+    return new ApiResponse(201, entity, 'Shadow entity created').send(res);
+}));
+
+/**
  * @route   POST /api/governance/roles
  * @desc    Assign a role to a user in a vault
  */
-router.post('/roles', protect, [
-    body('vaultId').isUUID(),
-    body('userId').isUUID(),
-    body('role').isIn(['owner', 'parent', 'child', 'trustee', 'beneficiary']),
-    body('permissions').isObject(),
-], asyncHandler(async (req, res) => {
-    const { vaultId, userId, role, permissions } = req.body;
-    const newRole = await governanceService.assignRole(vaultId, userId, role, permissions, req.user.id);
-    new ApiResponse(201, newRole, 'Role assigned successfully').send(res);
+const { vaultId, userId, role, permissions } = req.body;
+const newRole = await governanceService.assignRole(vaultId, userId, role, permissions, req.user.id);
+new ApiResponse(201, newRole, 'Role assigned successfully').send(res);
 }));
 
 /**
@@ -383,35 +384,63 @@ router.post('/workflows', protect, [
 }));
 
 /**
- * @route   POST /api/governance/workflows/:workflowId/triggers
- * @desc    Add a multivariable trigger to a workflow
+ * @desc Create a shadow entity (Trust, LLC, etc.)
+ * @route POST /api/governance/entities (main branch route re-integrated)
  */
-router.post('/workflows/:workflowId/triggers', protect, [
-    body('variable').isIn(['debt_apr', 'cash_reserve', 'market_volatility', 'tax_liability']),
-    body('operator').isIn(['>', '<', '==', '>=', '<=']),
-    body('thresholdValue').isNumeric(),
-], asyncHandler(async (req, res) => {
-    const { variable, operator, thresholdValue } = req.body;
-    const [trigger] = await db.insert(workflowTriggers).values({
+router.post('/entities', protect, asyncHandler(async (req, res) => {
+    const { name, entityType, taxId, legalAddress } = req.body;
+    const [entity] = await db.insert(shadowEntities).values({
         userId: req.user.id,
-        workflowId: req.params.workflowId,
-        variable,
-        operator,
-        thresholdValue: thresholdValue.toString()
+        name,
+        entityType,
+        taxId,
+        legalAddress
     }).returning();
-    new ApiResponse(201, trigger, 'Workflow trigger added').send(res);
+
+    return new ApiResponse(201, entity, "Shadow entity created").send(res);
 }));
 
 /**
- * @route   GET /api/governance/workflows/logs
- * @desc    Get execution audit logs for autonomous workflows
+ * @desc Define a new institutional bylaw
+ * @route POST /api/governance/bylaws
  */
-router.get('/workflows/logs', protect, asyncHandler(async (req, res) => {
-    const logs = await db.select().from(workflowExecutionLogs)
-        .where(eq(workflowExecutionLogs.userId, req.user.id))
-        .orderBy(desc(workflowExecutionLogs.createdAt))
-        .limit(50);
-    new ApiResponse(200, logs).send(res);
+router.post('/bylaws', protect, asyncHandler(async (req, res) => {
+    const { entityId, vaultId, thresholdAmount, requiredQuorum, votingPeriodHours } = req.body;
+    const [bylaw] = await db.insert(bylawDefinitions).values({
+        entityId,
+        vaultId,
+        thresholdAmount: thresholdAmount.toString(),
+        requiredQuorum,
+        votingPeriodHours
+    }).returning();
+
+    return new ApiResponse(201, bylaw, "Bylaw definition established").send(res);
+}));
+
+/**
+ * @desc Get all open resolutions for the user
+ * @route GET /api/governance/resolutions
+ */
+router.get('/resolutions', protect, asyncHandler(async (req, res) => {
+    const resolutions = await db.select().from(governanceResolutions)
+        .where(eq(governanceResolutions.status, 'open'))
+        .orderBy(desc(governanceResolutions.createdAt));
+
+    return new ApiResponse(200, resolutions, "Open resolutions retrieved").send(res);
+}));
+
+/**
+ * @desc Cast a vote on a resolution
+ * @route POST /api/governance/resolutions/:id/vote
+ */
+/**
+ * @route   POST /api/governance/resolutions/:id/vote
+ * @desc    Cast a vote on a resolution
+ */
+router.post('/resolutions/:id/vote', protect, asyncHandler(async (req, res) => {
+    const { vote, reason } = req.body;
+    const result = await governanceEngine.submitVote(req.user.id, req.params.id, vote, reason);
+    return new ApiResponse(200, result, "Vote cast successfully").send(res);
 }));
 
 /**
@@ -421,10 +450,8 @@ router.get('/workflows/logs', protect, asyncHandler(async (req, res) => {
 router.post('/workflows/:workflowId/execute', protect, asyncHandler(async (req, res) => {
     const [workflow] = await db.select().from(autopilotWorkflows).where(eq(autopilotWorkflows.id, req.params.workflowId));
     if (!workflow || workflow.userId !== req.user.id) return res.status(404).json({ message: 'Workflow not found' });
-
     await workflowEngine.manualTrigger(workflow.id, req.user.id);
     new ApiResponse(200, null, 'Workflow execution triggered manually').send(res);
 }));
 
 export default router;
-

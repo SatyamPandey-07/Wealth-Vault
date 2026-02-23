@@ -16,6 +16,7 @@ import { getSimplifiedDebts } from "../services/settlementService.js";
 import vaultService from "../services/vaultService.js";
 import fxService from "../services/fxService.js";
 import { signalAutopilot } from "../middleware/triggerInterceptor.js";
+import { enforceInstitutionalGovernance } from "../middleware/govGuard.js";
 import { ledgerEntries, ledgerAccounts, fxValuationSnapshots } from "../db/schema.js";
 
 const router = express.Router();
