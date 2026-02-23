@@ -4425,6 +4425,50 @@ export const escrowContracts = pgTable('escrow_contracts', {
             }));
 
             // ============================================================================
+            // GLOBAL TAX-LOT HISTORY — per-lot G/L ledger, HIFO | FIFO | LIFO (#460)
+            // Used by taxLotService.js, washSaleChecker.js, harvestEngine.js
+            // ============================================================================
+
+            export const taxLotHistory = pgTable('tax_lot_history', {
+                id: uuid('id').defaultRandom().primaryKey(),
+                userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+                investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }).notNull(),
+                acquisitionDate: timestamp('acquisition_date').notNull(),
+                quantity: numeric('quantity', { precision: 18, scale: 8 }).notNull(),
+                unitPrice: numeric('unit_price', { precision: 18, scale: 4 }).notNull(),
+                costBasis: numeric('cost_basis', { precision: 18, scale: 2 }).notNull(),
+                currency: text('currency').default('USD'),
+                jurisdiction: text('jurisdiction').default('US'),
+                // 'open' | 'closed' | 'harvested' | 'wash_sale_adjusted'
+                status: text('status').default('open'),
+                isSold: boolean('is_sold').default(false),
+                soldDate: timestamp('sold_date'),
+                salePrice: numeric('sale_price', { precision: 18, scale: 4 }),
+                realizedGainLoss: numeric('realized_gain_loss', { precision: 18, scale: 4 }),
+                holdingPeriodDays: integer('holding_period_days'),
+                isLongTerm: boolean('is_long_term').default(false),
+                washSaleDisallowed: numeric('wash_sale_disallowed', { precision: 18, scale: 4 }).default('0'),
+                replacementLotId: uuid('replacement_lot_id'),
+                fxRateAtAcquisition: numeric('fx_rate_at_acquisition', { precision: 18, scale: 6 }).default('1'),
+                fxRateAtDisposal: numeric('fx_rate_at_disposal', { precision: 18, scale: 6 }),
+                // Source: 'manual' | 'fx_swap' | 'expense' | 'investment' | 'dividend'
+                lotSource: text('lot_source').default('manual'),
+                metadata: jsonb('metadata').default({}),
+                createdAt: timestamp('created_at').defaultNow(),
+                updatedAt: timestamp('updated_at').defaultNow(),
+            }, (table) => ({
+                userInvestmentIdx: index('idx_lot_history_user_inv').on(table.userId, table.investmentId),
+                statusIdx: index('idx_lot_history_status').on(table.status),
+                acquiredIdx: index('idx_lot_history_acquired').on(table.acquisitionDate),
+                jurisdictionIdx: index('idx_lot_history_jurisdiction').on(table.jurisdiction),
+            }));
+
+            export const taxLotHistoryRelations = relations(taxLotHistory, ({ one }) => ({
+                user: one(users, { fields: [taxLotHistory.userId], references: [users.id] }),
+                investment: one(investments, { fields: [taxLotHistory.investmentId], references: [investments.id] }),
+            }));
+
+            // ============================================================================
             // AUTONOMOUS "FINANCIAL AUTOPILOT" & EVENT-DRIVEN WORKFLOW ORCHESTRATOR (#461)
             // ============================================================================
 
@@ -4433,6 +4477,9 @@ export const escrowContracts = pgTable('escrow_contracts', {
                 userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
                 name: text('name').notNull(),
                 description: text('description'),
+                status: text('status').default('draft').notNull(),
+                triggerLogic: text('trigger_logic').default('AND').notNull(),
+                domain: text('domain').notNull(),
                 status: text('status').default('draft').notNull(), // 'active', 'paused', 'draft', 'archived'
                 triggerLogic: text('trigger_logic').default('AND').notNull(), // 'AND' | 'OR'
                 domain: text('domain').notNull(), // 'VAULT','EXPENSE','INVESTMENT','DEBT','GOVERNANCE','MACRO'
