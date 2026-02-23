@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import anomalyScanner from '../services/anomalyScanner.js';
 import { logInfo, logError } from '../utils/logger.js';
+import eventBus from '../events/eventBus.js';
 
 /**
  * Market Monitoring Daemon (L3)
@@ -45,6 +46,29 @@ class MarketMonitor {
                 const simulatedPrice = basePrice * (1 + randomShift + spike);
 
                 await anomalyScanner.scanAsset(asset, simulatedPrice);
+
+                // Emit market volatility event for the Autopilot WorkflowEngine
+                // Volatility > 20% simulated via spike presence or large random shift
+                const effectiveVolatility = Math.abs(randomShift + spike) * 100;
+                if (effectiveVolatility > 5) {
+                    // Broadcast system-wide — WorkflowEngine will fan-out per userId
+                    eventBus.emit('MARKET_VOLATILITY_CHANGE', {
+                        userId: 'system', // System-level broadcast; WorkflowDaemon handles per-user
+                        asset,
+                        value: effectiveVolatility,
+                        simulatedPrice,
+                        isSpike: spike !== 0,
+                    });
+                    // VIX proxy for macro triggers
+                    if (effectiveVolatility > 15) {
+                        eventBus.emit('MACRO_VIX_UPDATE', {
+                            userId: 'system',
+                            asset,
+                            value: effectiveVolatility,
+                            severity: effectiveVolatility > 20 ? 'critical' : 'warning',
+                        });
+                    }
+                }
             }
         } catch (error) {
             logError('[Market Monitor] Tick ingestion failed:', error);

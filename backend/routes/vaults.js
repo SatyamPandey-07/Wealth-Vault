@@ -15,6 +15,7 @@ import { complianceGuard } from "../middleware/complianceGuard.js";
 import { getSimplifiedDebts } from "../services/settlementService.js";
 import vaultService from "../services/vaultService.js";
 import fxService from "../services/fxService.js";
+import { signalAutopilot } from "../middleware/triggerInterceptor.js";
 import { enforceInstitutionalGovernance } from "../middleware/govGuard.js";
 import { ledgerEntries, ledgerAccounts, fxValuationSnapshots } from "../db/schema.js";
 
@@ -64,6 +65,8 @@ router.post(
         });
 
         return new ApiResponse(201, newVault, "Vault created successfully").send(res);
+        // Autopilot signal: vault balance starts at 0
+        signalAutopilot(req, 'VAULT_BALANCE_UPDATED', { vaultId: newVault.id, balance: 0 });
     })
 );
 

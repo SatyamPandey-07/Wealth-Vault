@@ -4480,6 +4480,9 @@ export const escrowContracts = pgTable('escrow_contracts', {
                 status: text('status').default('draft').notNull(),
                 triggerLogic: text('trigger_logic').default('AND').notNull(),
                 domain: text('domain').notNull(),
+                status: text('status').default('draft').notNull(), // 'active', 'paused', 'draft', 'archived'
+                triggerLogic: text('trigger_logic').default('AND').notNull(), // 'AND' | 'OR'
+                domain: text('domain').notNull(), // 'VAULT','EXPENSE','INVESTMENT','DEBT','GOVERNANCE','MACRO'
                 priority: integer('priority').default(0),
                 cooldownMinutes: integer('cooldown_minutes').default(60),
                 lastExecutedAt: timestamp('last_executed_at'),
@@ -4539,6 +4542,7 @@ export const escrowContracts = pgTable('escrow_contracts', {
                 durationMs: integer('duration_ms'),
             });
 
+            // Autopilot relations
             export const autopilotWorkflowsRelations = relations(autopilotWorkflows, ({ one, many }) => ({
                 user: one(users, { fields: [autopilotWorkflows.userId], references: [users.id] }),
                 triggers: many(workflowTriggers),

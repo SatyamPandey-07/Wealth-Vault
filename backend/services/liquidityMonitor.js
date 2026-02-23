@@ -146,7 +146,7 @@ class LiquidityMonitor {
         eventBus.emit('LIQUIDITY_RUNWAY_CHANGE', {
             userId,
             variable: 'cash_reserve',
-            value: runwayDays,
+            value: runwayDays, // WorkflowEngine reads this as the metric value
             metadata: { isStable: false, exhaustionDate: forecast.projections[zeroIndex].date }
         });
 

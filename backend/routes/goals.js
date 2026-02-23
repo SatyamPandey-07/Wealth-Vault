@@ -9,6 +9,7 @@ import { AppError } from "../utils/AppError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { checkVaultAccess } from "../middleware/vaultAuth.js";
 import notificationService from "../services/notificationService.js";
+import { signalAutopilot } from "../middleware/triggerInterceptor.js";
 
 const router = express.Router();
 
@@ -264,6 +265,8 @@ router.post(
     });
 
     return new ApiResponse(201, { goal: result }, "Goal created successfully").send(res);
+    // Autopilot signal: new goal represents a fund target
+    signalAutopilot(req, 'AUTOPILOT_FUND_GOAL', { goalId: newGoal.id, amount: 0, fromVaultId: null });
   })
 );
 
@@ -389,6 +392,9 @@ router.post(
         category: { columns: { name: true, color: true, icon: true } },
       },
     });
+
+    // Autopilot signal: contribution may push a FUND_GOAL workflow
+    signalAutopilot(req, 'AUTOPILOT_FUND_GOAL', { goalId: req.params.id, amount: parseFloat(amount) });
 
     return new ApiResponse(200, { goal: result }, "Contribution added successfully").send(res);
   })

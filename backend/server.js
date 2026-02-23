@@ -67,6 +67,10 @@ import successionRoutes from "./routes/succession.js";
 import entityRoutes from "./routes/entities.js";
 import yieldsRoutes from "./routes/yields.js";
 import arbitrageRoutes from "./routes/arbitrage.js";
+import autopilotRoutes from "./routes/autopilot.js";
+import scheduleWorkflowDaemon from "./jobs/workflowDaemon.js";
+import { triggerInterceptor } from "./middleware/triggerInterceptor.js";
+import { initializeAutopilotListeners } from "./listeners/autopilotListeners.js";
 import inventoryRoutes from "./routes/inventory.js";
 import marginRoutes from "./routes/margin.js";
 import clearingRoutes from "./routes/clearing.js";
@@ -129,6 +133,7 @@ import { initializeNotificationListeners } from "./listeners/notificationListene
 import { initializeAnalyticsListeners } from "./listeners/analyticsListeners.js";
 import { initializeSubscriptionListeners } from "./listeners/subscriptionListeners.js";
 import { initializeSavingsListeners } from "./listeners/savingsListeners.js";
+import workflowEngine from "./services/workflowEngine.js"; // Bootstrap event hooks
 
 // Load environment variables
 dotenv.config();
@@ -165,6 +170,7 @@ initializeNotificationListeners();
 initializeAnalyticsListeners();
 initializeSubscriptionListeners();
 initializeSavingsListeners();
+initializeAutopilotListeners();
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -268,6 +274,9 @@ console.log("📦 Database initialized via Drizzle");
 // Apply general rate limiting to all API routes
 app.use("/api", generalLimiter);
 
+// Autopilot trigger interceptor — fires workflow events post-response
+app.use("/api", triggerInterceptor);
+
 // Swagger API Documentation
 app.use(
   "/api-docs",
@@ -322,6 +331,7 @@ app.use("/api/liquidity", userLimiter, liquidityOptimizerRoutes);
 app.use("/api/forensic", userLimiter, forensicRoutes);
 app.use("/api/yields", userLimiter, yieldsRoutes);
 app.use("/api/arbitrage", userLimiter, arbitrageRoutes);
+app.use("/api/autopilot", userLimiter, autopilotRoutes);
 app.use("/api/escrow", userLimiter, escrowRoutes);
 app.use("/api/risk-lab", userLimiter, riskLabRoutes);
 app.use("/api/corporate", userLimiter, corporateRoutes);
@@ -405,6 +415,7 @@ if (process.env.NODE_ENV !== 'test') {
     riskScanner.start();
     marketRateSyncJob.start();
     velocityJob.start();
+    scheduleWorkflowDaemon();
     scheduleMacroDataSync();
     driftMonitor();
     scheduleLotReconciliation();
