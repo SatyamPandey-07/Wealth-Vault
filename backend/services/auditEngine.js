@@ -49,9 +49,38 @@ class AuditEngine {
                 return await this.detectLocationJumps(userId);
             case 'duplicate_payout':
                 return await this.detectDuplicatePayouts(userId);
+            case 'wash_sale_recurring':
+                return await this.detectWashSaleClusters(userId, pattern.threshold);
             default:
                 return [];
         }
+    }
+
+    async detectWashSaleClusters(userId, threshold) {
+        // Detect users triggering more than X wash sale violations in 30 days
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+        const { washSaleViolations } = await import('../db/schema.js'); // Lazy import if needed or use from top
+
+        const violations = await db.select({
+            count: sql`COUNT(*)`
+        })
+            .from(washSaleViolations)
+            .where(and(
+                eq(washSaleViolations.userId, userId),
+                gte(washSaleViolations.violationDate, thirtyDaysAgo)
+            ));
+
+        const count = parseInt(violations[0]?.count || 0);
+
+        if (count > threshold) {
+            return [{
+                type: 'wash_sale_recurring',
+                message: `User triggered ${count} wash-sale violations in the last 30 days (Limit: ${threshold})`,
+                severity: 'critical'
+            }];
+        }
+        return [];
     }
 
     async detectOutliers(userId, zThreshold) {
@@ -135,7 +164,7 @@ class AuditEngine {
             await db.insert(auditLogs).values({
                 userId,
                 actionType: 'anomaly_detected',
-                severity: 'warning',
+                severity: anomaly.severity || 'warning',
                 details: anomaly,
                 metadata: { patternId: pattern.id }
             });
@@ -154,7 +183,8 @@ class AuditEngine {
         const defaults = [
             { userId, patternName: 'Amount Outlier', detectionLogic: 'outlier', threshold: 3.0 },
             { userId, patternName: 'High Velocity', detectionLogic: 'velocity', threshold: 5.0 },
-            { userId, patternName: 'Duplicate Payment', detectionLogic: 'duplicate_payout', threshold: 0 }
+            { userId, patternName: 'Duplicate Payment', detectionLogic: 'duplicate_payout', threshold: 0 },
+            { userId, patternName: 'Recurring Wash Sale', detectionLogic: 'wash_sale_recurring', threshold: 3.0 }
         ];
 
         for (const d of defaults) {

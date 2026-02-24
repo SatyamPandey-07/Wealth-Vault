@@ -90,7 +90,14 @@ class TaxLotService {
         try {
             return await db.transaction(async (tx) => {
                 let lots;
-                if (method === 'HIFO') {
+                if (method === 'SPECIFIC_ID' && saleDetails.specificLotId) {
+                    lots = await tx.select().from(taxLotHistory)
+                        .where(and(
+                            eq(taxLotHistory.id, saleDetails.specificLotId),
+                            eq(taxLotHistory.userId, userId),
+                            eq(taxLotHistory.status, 'open')
+                        ));
+                } else if (method === 'HIFO') {
                     lots = await tx.select().from(taxLotHistory)
                         .where(and(
                             eq(taxLotHistory.userId, userId),
