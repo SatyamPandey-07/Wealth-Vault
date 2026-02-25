@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import db from '../config/db.js';
-import { internalDebts } from '../db/schema.js';
+import { internalDebts, economicVolatilityIndices } from '../db/schema.js';
 import { eq, and, sql } from 'drizzle-orm';
 
 /**
@@ -23,6 +23,10 @@ class InterlockAccrualSync {
             // Fetch all active internal debts
             const activeDebts = await db.select().from(internalDebts).where(eq(internalDebts.status, 'active'));
 
+            // Fetch latest macro indices for floating rates
+            const macroIndices = await db.select().from(economicVolatilityIndices);
+            const indexMap = Object.fromEntries(macroIndices.map(idx => [idx.indexName, parseFloat(idx.currentValue)]));
+
             console.log(`[AccrualSync] Found ${activeDebts.length} active internal debts.`);
 
             for (const debt of activeDebts) {
@@ -31,13 +35,21 @@ class InterlockAccrualSync {
                 const daysSince = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
 
                 if (daysSince > 0) {
-                    const annualRate = parseFloat(debt.interestRate) / 100;
+                    let annualRate;
+                    if (debt.rateType === 'floating' && debt.indexSource && indexMap[debt.indexSource] !== undefined) {
+                        const baseIndex = indexMap[debt.indexSource];
+                        const spread = parseFloat(debt.interestSpread || '0');
+                        annualRate = (baseIndex + spread) / 100;
+                        console.log(`[AccrualSync] Debt ${debt.id} using floating rate: ${baseIndex}% + ${spread}% spread = ${annualRate * 100}%`);
+                    } else {
+                        annualRate = parseFloat(debt.interestRate) / 100;
+                    }
+
                     const dailyRate = annualRate / 365;
                     const principal = parseFloat(debt.principalAmount);
                     const currentBalance = parseFloat(debt.currentBalance);
 
                     // Calculate new balance with daily compounding
-                    // Formula: A = P(1 + r)^t
                     const newBalance = currentBalance * Math.pow(1 + dailyRate, daysSince);
                     const totalAccrued = newBalance - principal;
 
@@ -53,7 +65,8 @@ class InterlockAccrualSync {
                                     date: now.toISOString(),
                                     daysCalculated: daysSince,
                                     previousBalance: currentBalance.toFixed(8),
-                                    accrualAmount: (newBalance - currentBalance).toFixed(8)
+                                    accrualAmount: (newBalance - currentBalance).toFixed(8),
+                                    appliedRate: (annualRate * 100).toFixed(4) + '%'
                                 }
                             }
                         })

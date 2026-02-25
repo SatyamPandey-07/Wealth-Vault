@@ -16,10 +16,22 @@ router.get('/analysis', protect, async (req, res) => {
     }
 });
 
+// Get opportunity cost analysis
+router.get('/opportunity-cost', protect, async (req, res) => {
+    try {
+        const analysis = await interlockService.getOpportunityCostAnalysis(req.user.id);
+        res.status(200).json(new ApiResponse(200, analysis, 'Opportunity cost analysis retrieved successfully'));
+    } catch (error) {
+        res.status(500).json(new ApiResponse(500, null, error.message));
+    }
+});
+
 // Initiate an internal loan
-// Applying interlock safety to ensure lender doesn't become insolvent
 router.post('/loans', protect, enforceInterlockSafety(100), async (req, res) => {
-    const { lenderVaultId, borrowerVaultId, amount, interestRate } = req.body;
+    const {
+        lenderVaultId, borrowerVaultId, amount, interestRate,
+        rateType = 'fixed', indexSource, interestSpread = 0
+    } = req.body;
 
     try {
         const loan = await interlockService.initiateInternalLoan(
@@ -27,7 +39,10 @@ router.post('/loans', protect, enforceInterlockSafety(100), async (req, res) => 
             lenderVaultId,
             borrowerVaultId,
             parseFloat(amount),
-            parseFloat(interestRate)
+            parseFloat(interestRate),
+            rateType,
+            indexSource,
+            parseFloat(interestSpread)
         );
         res.status(201).json(new ApiResponse(201, loan, 'Internal loan initiated successfully'));
     } catch (error) {

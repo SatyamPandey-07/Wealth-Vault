@@ -1,5 +1,5 @@
 import db from '../config/db.js';
-import { internalDebts, vaultBalances, ledgerEntries, ledgerAccounts } from '../db/schema.js';
+import { internalDebts, vaultBalances, ledgerEntries, ledgerAccounts, economicVolatilityIndices } from '../db/schema.js';
 import crypto from 'crypto';
 import { eq, and, sql } from 'drizzle-orm';
 import { NetWorthGraph } from '../utils/netWorthGraph.js';
@@ -11,7 +11,7 @@ class InterlockService {
     /**
      * Creates an internal loan between two vaults.
      */
-    async initiateInternalLoan(userId, lenderVaultId, borrowerVaultId, amount, interestRate) {
+    async initiateInternalLoan(userId, lenderVaultId, borrowerVaultId, amount, interestRate, rateType = 'fixed', indexSource = null, interestSpread = 0) {
         return await db.transaction(async (tx) => {
             // 1. Verify lender has sufficient cash balance
             const lenderBalance = await tx.select().from(vaultBalances)
@@ -30,6 +30,9 @@ class InterlockService {
                 principalAmount: amount.toFixed(8),
                 currentBalance: amount.toFixed(8),
                 interestRate: interestRate.toFixed(2),
+                rateType,
+                indexSource,
+                interestSpread: interestSpread.toFixed(2),
                 status: 'active',
                 lastAccrualDate: new Date()
             }).returning();
@@ -158,6 +161,57 @@ class InterlockService {
         return {
             summary: graph.getAllVaultsSummary(),
             cycles: graph.detectCycles()
+        };
+    }
+    /**
+     * Opportunity Cost Analyzer (#466)
+     * Compares internal lending yields against macro benchmarks to suggest optimal capital allocation.
+     */
+    async getOpportunityCostAnalysis(userId) {
+        const [activeDebts, macroIndices] = await Promise.all([
+            db.select().from(internalDebts).where(and(eq(internalDebts.userId, userId), eq(internalDebts.status, 'active'))),
+            db.select().from(economicVolatilityIndices)
+        ]);
+
+        const indexMap = Object.fromEntries(macroIndices.map(idx => [idx.indexName, parseFloat(idx.currentValue)]));
+        const riskFreeRate = indexMap['FedRates'] || 5.25; // Default to 5.25% if not found
+
+        const recommendations = activeDebts.map(debt => {
+            let currentYield;
+            if (debt.rateType === 'floating' && debt.indexSource && indexMap[debt.indexSource] !== undefined) {
+                currentYield = indexMap[debt.indexSource] + parseFloat(debt.interestSpread || '0');
+            } else {
+                currentYield = parseFloat(debt.interestRate);
+            }
+
+            const yieldDelta = currentYield - riskFreeRate;
+            let suggestion = 'Hold';
+            let priority = 'low';
+
+            if (yieldDelta < -0.5) {
+                suggestion = 'Repay Internal & Invest Externally';
+                priority = 'high';
+            } else if (yieldDelta > 2.0) {
+                suggestion = 'Maximize Internal Lending';
+                priority = 'medium';
+            }
+
+            return {
+                loanId: debt.id,
+                borrowerVaultId: debt.borrowerVaultId,
+                currentYield: currentYield.toFixed(2) + '%',
+                benchmarkRate: riskFreeRate.toFixed(2) + '%',
+                yieldDelta: yieldDelta.toFixed(2) + '%',
+                suggestion,
+                priority
+            };
+        });
+
+        return {
+            userId,
+            benchmarkUsed: 'FedRates',
+            analysisDate: new Date(),
+            recommendations
         };
     }
 }
