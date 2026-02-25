@@ -3,6 +3,8 @@ import jwt from "jsonwebtoken";
 import { body, validationResult } from "express-validator";
 import bcrypt from "bcryptjs";
 import { eq, and } from "drizzle-orm";
+import path from "path";
+import { fileURLToPath } from 'url';
 import db from "../config/db.js";
 import { users, categories, securityEvents } from "../db/schema.js";
 import { protect } from "../middleware/auth.js";
@@ -22,7 +24,8 @@ import {
   revokeDeviceSession,
   revokeAllUserSessions,
   getUserSessions,
-  blacklistToken
+  blacklistToken,
+  REFRESH_TOKEN_COOKIE_OPTIONS
 } from "../services/tokenService.js";
 import {
   generateMFASecret,
@@ -36,6 +39,14 @@ import {
   isValidMFAToken,
 } from "../utils/mfa.js";
 import securityService from "../services/securityService.js";
+import { logAudit, AuditActions, ResourceTypes } from "../middleware/auditLogger.js";
+
+// Get __dirname equivalent for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// User storage quota (10MB)
+const USER_STORAGE_QUOTA = 10 * 1024 * 1024; // 10MB
 
 const router = express.Router();
 
@@ -728,7 +739,7 @@ router.put(
 );
 
 // @route   POST /api/auth/refresh
-// @desc    Refresh access token using refresh token
+// @desc    Refresh access token using refresh token (reads from HttpOnly cookie)
 // @access  Public
 router.post("/refresh",
   [
@@ -740,7 +751,6 @@ router.post("/refresh",
       return next(new AppError(400, "Validation failed", errors.array()));
     }
 
-    const { refreshToken } = req.body;
     const ipAddress = req.ip || req.connection.remoteAddress;
 
     const tokens = await refreshAccessToken(refreshToken, ipAddress);
@@ -751,7 +761,7 @@ router.post("/refresh",
 );
 
 // @route   POST /api/auth/logout
-// @desc    Logout user from current device
+// @desc    Logout user from current device and clear refresh token cookie
 // @access  Private
 router.post("/logout", protect, asyncHandler(async (req, res, next) => {
   const sessionId = req.sessionId;
