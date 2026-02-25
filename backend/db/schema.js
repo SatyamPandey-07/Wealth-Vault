@@ -966,6 +966,8 @@ export const internalDebts = pgTable('internal_debts', {
     interestRate: numeric('interest_rate', { precision: 5, scale: 2 }).notNull(), // Annual interest rate
     accruedInterest: numeric('accrued_interest', { precision: 24, scale: 8 }).default('0'),
     compoundingFrequency: text('compounding_frequency').default('daily'), // daily, monthly, yearly
+    repaymentPriority: integer('repayment_priority').default(1),
+    autoSweepThreshold: numeric('auto_sweep_threshold', { precision: 24, scale: 8 }).default('0'),
     status: text('status').default('active'), // active, repaid, defaulted
     lastAccrualDate: timestamp('last_accrual_date').defaultNow(),
     metadata: jsonb('metadata').default({}),

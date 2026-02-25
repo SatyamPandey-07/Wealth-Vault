@@ -1,5 +1,6 @@
 import db from '../config/db.js';
 import { internalDebts, vaultBalances, ledgerEntries, ledgerAccounts } from '../db/schema.js';
+import crypto from 'crypto';
 import { eq, and, sql } from 'drizzle-orm';
 import { NetWorthGraph } from '../utils/netWorthGraph.js';
 
@@ -34,18 +35,47 @@ class InterlockService {
             }).returning();
 
             // 3. Update vault balances (Transfer cash from lender to borrower)
-            // Note: We assume single currency (USD) for simplicity in this module, 
-            // or we could expand to handle specific currency rows.
-
-            // Deduct from lender
             await tx.update(vaultBalances)
                 .set({ balance: sql`balance - ${amount.toFixed(8)}` })
                 .where(and(eq(vaultBalances.vaultId, lenderVaultId), eq(vaultBalances.userId, userId)));
 
-            // Add to borrower
             await tx.update(vaultBalances)
                 .set({ balance: sql`balance + ${amount.toFixed(8)}` })
                 .where(and(eq(vaultBalances.vaultId, borrowerVaultId), eq(vaultBalances.userId, userId)));
+
+            // 4. Create Ledger Entries for double-entry integrity
+            const cashAccount = await tx.query.ledgerAccounts.findFirst({
+                where: and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.accountCode, '1000'))
+            });
+            const debtAccount = await tx.query.ledgerAccounts.findFirst({
+                where: and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.accountCode, '2100'))
+            });
+
+            if (cashAccount && debtAccount) {
+                const journalId = crypto.randomUUID();
+                const description = `Internal Loan: Vault ${lenderVaultId.substring(0, 8)} -> Vault ${borrowerVaultId.substring(0, 8)}`;
+
+                await tx.insert(ledgerEntries).values([
+                    // Lender Leg: Cash out, Receivable in
+                    {
+                        userId, journalId, accountId: cashAccount.id, vaultId: lenderVaultId,
+                        entryType: 'credit', amount: amount.toFixed(2), description, referenceType: 'internal_debt', referenceId: loan.id
+                    },
+                    {
+                        userId, journalId, accountId: debtAccount.id, vaultId: lenderVaultId,
+                        entryType: 'debit', amount: amount.toFixed(2), description, referenceType: 'internal_debt', referenceId: loan.id
+                    },
+                    // Borrower Leg: Cash in, Payable in
+                    {
+                        userId, journalId, accountId: cashAccount.id, vaultId: borrowerVaultId,
+                        entryType: 'debit', amount: amount.toFixed(2), description, referenceType: 'internal_debt', referenceId: loan.id
+                    },
+                    {
+                        userId, journalId, accountId: debtAccount.id, vaultId: borrowerVaultId,
+                        entryType: 'credit', amount: amount.toFixed(2), description, referenceType: 'internal_debt', referenceId: loan.id
+                    }
+                ]);
+            }
 
             return loan;
         });
@@ -80,6 +110,40 @@ class InterlockService {
                 })
                 .where(eq(internalDebts.id, loanId))
                 .returning();
+
+            // 4. Create Ledger Entries for repayment
+            const cashAccount = await tx.query.ledgerAccounts.findFirst({
+                where: and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.accountCode, '1000'))
+            });
+            const debtAccount = await tx.query.ledgerAccounts.findFirst({
+                where: and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.accountCode, '2100'))
+            });
+
+            if (cashAccount && debtAccount) {
+                const journalId = crypto.randomUUID();
+                const description = `Internal Loan Repayment: Loan ${loanId.substring(0, 8)}`;
+
+                await tx.insert(ledgerEntries).values([
+                    // Borrower: Cash out, Liability down (Debit)
+                    {
+                        userId, journalId, accountId: cashAccount.id, vaultId: loan.borrowerVaultId,
+                        entryType: 'credit', amount: amount.toFixed(2), description, referenceType: 'internal_debt', referenceId: loanId
+                    },
+                    {
+                        userId, journalId, accountId: debtAccount.id, vaultId: loan.borrowerVaultId,
+                        entryType: 'debit', amount: amount.toFixed(2), description, referenceType: 'internal_debt', referenceId: loanId
+                    },
+                    // Lender: Cash in, Asset down (Credit)
+                    {
+                        userId, journalId, accountId: cashAccount.id, vaultId: loan.lenderVaultId,
+                        entryType: 'debit', amount: amount.toFixed(2), description, referenceType: 'internal_debt', referenceId: loanId
+                    },
+                    {
+                        userId, journalId, accountId: debtAccount.id, vaultId: loan.lenderVaultId,
+                        entryType: 'credit', amount: amount.toFixed(2), description, referenceType: 'internal_debt', referenceId: loanId
+                    }
+                ]);
+            }
 
             return updatedLoan;
         });

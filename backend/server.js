@@ -59,6 +59,8 @@ import budgetRoutes from "./routes/budgets.js";
 import expenseSharesRoutes from "./routes/expenseShares.js";
 import reimbursementsRoutes from "./routes/reimbursements.js";
 import interlockRoutes from "./routes/interlock.js";
+import liquiditySweepJob from "./jobs/liquiditySweepJob.js";
+import interlockAccrualSync from "./jobs/interlockAccrualSync.js";
 import forecastRoutes from "./routes/forecasts.js";
 import liquidityOptimizerRoutes from "./routes/liquidityOptimizer.js";
 import forensicRoutes from "./routes/forensic.js";
@@ -431,6 +433,8 @@ if (process.env.NODE_ENV !== 'test') {
     mortalityDaemon.start();
     residencyAuditJob.start();
     scheduleOracleSync();
+    liquiditySweepJob.init();
+    interlockAccrualSync.init();
 
     // Add debt services to app.locals for middleware/route access
     app.locals.debtEngine = debtEngine;
