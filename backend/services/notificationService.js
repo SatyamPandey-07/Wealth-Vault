@@ -369,6 +369,29 @@ class NotificationService {
   }
 
   /**
+   * Send interlock fragility warning (#465)
+   */
+  async sendInterlockFragilityWarning(userId, { targetVaultId, fragileLinkCount, depth, shockPercentage }) {
+    const title = "🕸️ Network Complexity Alert: Fragile Links Detected";
+    const message = `
+      <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #fef2f2; border-radius: 8px; border: 1px solid #f87171;">
+        <h3 style="margin-top: 0; color: #991b1b;">High Recursive Leverage Warning</h3>
+        <p>A simulated shock of <strong>${shockPercentage}%</strong> on vault <strong>${targetVaultId.substring(0, 8)}</strong> has identified <strong>${fragileLinkCount}</strong> fragile internal links.</p>
+        <p>The impact cascades through <strong>${depth} levels</strong> of your interlocking network. Your structure may be becoming "too complex to fail."</p>
+        <p style="margin-bottom: 0;">We recommend simplifying your internal debt structure or increasing liquidity buffers in the impacted vaults.</p>
+      </div>
+    `;
+
+    await this.sendEmailByUserId(userId, title, message);
+    await this.sendNotification(userId, {
+      title,
+      message: `Interlocking network stress test found ${fragileLinkCount} fragile links across ${depth} levels.`,
+      type: 'interlock_fragility',
+      data: { targetVaultId, fragileLinkCount, depth, shockPercentage }
+    });
+  }
+
+  /**
    * Helper to send email by userId
    */
   async sendEmailByUserId(userId, subject, message) {

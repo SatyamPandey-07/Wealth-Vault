@@ -142,4 +142,92 @@ export class NetWorthGraph {
         }
         return summary;
     }
+
+    /**
+     * Returns a D3-compatible node-link structure (#465)
+     */
+    getTopology() {
+        if (!this.isBuilt) throw new Error("Graph not built. Call build() first.");
+
+        const nodes = [];
+        const links = [];
+
+        for (const [id, node] of this.nodes.entries()) {
+            nodes.push({
+                id,
+                name: node.name,
+                cashBalance: node.cashBalance,
+                netWorth: this.getVaultNetWorth(id),
+                type: 'vault'
+            });
+
+            for (const asset of node.assets) {
+                links.push({
+                    id: asset.id,
+                    source: id,
+                    target: asset.targetVaultId,
+                    value: asset.amount,
+                    interestRate: asset.interestRate,
+                    label: `Lending: ${asset.amount}`
+                });
+            }
+        }
+
+        return { nodes, links };
+    }
+
+    /**
+     * Simulates an asset shock and identifies "Fragile Links" (#465)
+     */
+    simulateAssetShock(targetVaultId, shockPercentage) {
+        if (!this.isBuilt) throw new Error("Graph not built. Call build() first.");
+
+        const nodes = Object.fromEntries(
+            Array.from(this.nodes.entries()).map(([id, node]) => [
+                id, {
+                    originalNetWorth: this.getVaultNetWorth(id),
+                    remainingNetWorth: this.getVaultNetWorth(id),
+                    impactedLevel: -1,
+                    isInsolvent: false,
+                    lossPropagated: 0
+                }
+            ])
+        );
+
+        const shockNode = this.nodes.get(targetVaultId);
+        if (!shockNode) throw new Error("Target vault not found");
+
+        const initialLoss = shockNode.cashBalance * (shockPercentage / 100);
+        const queue = [{ id: targetVaultId, loss: initialLoss, level: 0 }];
+        const visited = new Set();
+
+        while (queue.length > 0) {
+            const { id, loss, level } = queue.shift();
+            if (visited.has(id)) continue;
+            // visited.add(id); // Can't just visited.add here because loss might be larger from multiple paths
+
+            const nodeRes = nodes[id];
+            nodeRes.remainingNetWorth -= loss;
+            nodeRes.lossPropagated += loss;
+            nodeRes.impactedLevel = Math.max(nodeRes.impactedLevel, level);
+
+            if (nodeRes.remainingNetWorth < 0) {
+                nodeRes.isInsolvent = true;
+            }
+
+            // Propagate to lenders (Who have assets in THIS vault)
+            const graphNode = this.nodes.get(id);
+            for (const liability of graphNode.liabilities) {
+                const lenderId = liability.sourceVaultId;
+                // If this node fails or is shocked, the lender's asset is at risk
+                // For simulation, we propagate the loss proportionally or fully if node is insolvent
+                const potentialLenderLoss = Math.min(liability.amount, loss);
+                if (potentialLenderLoss > 0) {
+                    queue.push({ id: lenderId, loss: potentialLenderLoss, level: level + 1 });
+                }
+            }
+        }
+
+        return nodes;
+    }
 }

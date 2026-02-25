@@ -3,6 +3,7 @@ import { internalDebts, vaultBalances, ledgerEntries, ledgerAccounts, economicVo
 import crypto from 'crypto';
 import { eq, and, sql } from 'drizzle-orm';
 import { NetWorthGraph } from '../utils/netWorthGraph.js';
+import notificationService from './notificationService.js';
 
 /**
  * Service to manage internal vault-to-vault lending and interlocking network.
@@ -212,6 +213,47 @@ class InterlockService {
             benchmarkUsed: 'FedRates',
             analysisDate: new Date(),
             recommendations
+        };
+    }
+
+    /**
+     * Returns the interlocking network topology for visualization (#465)
+     */
+    async getTopology(userId) {
+        const graph = new NetWorthGraph(userId);
+        await graph.build();
+        return graph.getTopology();
+    }
+
+    /**
+     * Executes a predictive cascade stress test (#465)
+     */
+    async runStressTest(userId, targetVaultId, shockPercentage) {
+        const graph = new NetWorthGraph(userId);
+        await graph.build();
+        const results = graph.simulateAssetShock(targetVaultId, shockPercentage);
+
+        // Filter for critical levels/insolvency to generate alerts
+        const fragileLinks = Object.entries(results)
+            .filter(([id, res]) => res.isInsolvent || res.impactedLevel > 1)
+            .map(([id, res]) => ({ vaultId: id, ...res }));
+
+        // INTEGRATION: Trigger liquidityAlerts if structure is too complex/leveraged
+        if (fragileLinks.length > 5 || fragileLinks.some(l => l.impactedLevel > 2)) {
+            await notificationService.sendInterlockFragilityWarning(userId, {
+                targetVaultId,
+                fragileLinkCount: fragileLinks.length,
+                depth: Math.max(...Object.values(results).map(r => r.impactedLevel)),
+                shockPercentage
+            });
+        }
+
+        return {
+            targetVaultId,
+            shockPercentage,
+            executedAt: new Date(),
+            fullImpact: results,
+            fragileLinks
         };
     }
 }

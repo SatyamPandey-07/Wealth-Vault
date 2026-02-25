@@ -63,4 +63,25 @@ router.post('/loans/:loanId/repay', protect, async (req, res) => {
     }
 });
 
+// Get D3-compatible network topology (#465)
+router.get('/topology', protect, async (req, res) => {
+    try {
+        const topology = await interlockService.getTopology(req.user.id);
+        res.status(200).json(new ApiResponse(200, topology, 'Network topology retrieved successfully'));
+    } catch (error) {
+        res.status(500).json(new ApiResponse(500, null, error.message));
+    }
+});
+
+// Run a predictive cascade stress test (#465)
+router.post('/stress-test', protect, async (req, res) => {
+    const { targetVaultId, shockPercentage } = req.body;
+    try {
+        const results = await interlockService.runStressTest(req.user.id, targetVaultId, parseFloat(shockPercentage));
+        res.status(200).json(new ApiResponse(200, results, 'Stress test completed successfully'));
+    } catch (error) {
+        res.status(500).json(new ApiResponse(500, null, error.message));
+    }
+});
+
 export default router;
