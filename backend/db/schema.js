@@ -963,9 +963,14 @@ export const internalDebts = pgTable('internal_debts', {
     borrowerVaultId: uuid('borrower_vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
     principalAmount: numeric('principal_amount', { precision: 24, scale: 8 }).notNull(),
     currentBalance: numeric('current_balance', { precision: 24, scale: 8 }).notNull(),
-    interestRate: numeric('interest_rate', { precision: 5, scale: 2 }).notNull(), // Annual interest rate
+    interestRate: numeric('interest_rate', { precision: 5, scale: 2 }).notNull(), // Annual interest rate (Base rate if floating)
+    rateType: text('rate_type').default('fixed'), // fixed, floating
+    indexSource: text('index_source'), // e.g., 'FedRates', 'SOFR' from economic_volatility_indices
+    interestSpread: numeric('interest_spread', { precision: 5, scale: 2 }).default('0'), // Added to index rate if floating
     accruedInterest: numeric('accrued_interest', { precision: 24, scale: 8 }).default('0'),
     compoundingFrequency: text('compounding_frequency').default('daily'), // daily, monthly, yearly
+    repaymentPriority: integer('repayment_priority').default(1),
+    autoSweepThreshold: numeric('auto_sweep_threshold', { precision: 24, scale: 8 }).default('0'),
     status: text('status').default('active'), // active, repaid, defaulted
     lastAccrualDate: timestamp('last_accrual_date').defaultNow(),
     metadata: jsonb('metadata').default({}),
