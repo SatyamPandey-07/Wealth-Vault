@@ -34,10 +34,30 @@ api.interceptors.request.use(
   }
 );
 
-// Response interceptor for error handling
+// Flag to prevent multiple simultaneous refresh attempts
+let isRefreshing = false;
+// Store failed requests while refreshing
+let failedRequestsQueue: Array<{
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+}> = [];
+
+// Process queued requests after token refresh
+const processQueue = (error: AxiosError | null, newAccessToken?: string) => {
+  failedRequestsQueue.forEach((prom) => {
+    if (error) {
+      prom.reject(error);
+    } else {
+      prom.resolve(newAccessToken);
+    }
+  });
+  failedRequestsQueue = [];
+};
+
+// Response interceptor for error handling with auto-refresh
 api.interceptors.response.use(
   (response: AxiosResponse) => response,
-  (error: AxiosError) => {
+  async (error: AxiosError) => {
     // Enhanced error logging
     if (error.response) {
       console.error('API Error Response:', {
@@ -58,13 +78,69 @@ api.interceptors.response.use(
       console.error('API Setup Error:', error.message);
     }
 
+    const originalRequest = error.config as { _retry?: boolean } & Record<string, unknown>;
+
+    // Handle 401 errors - try to refresh token using HttpOnly cookie
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      // Skip for dev mode
+      const token = localStorage.getItem('authToken');
+      if (token === 'dev-mock-token-123') {
+        return Promise.reject(error);
+      }
+
+      // If already refreshing, add to queue
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          failedRequestsQueue.push({ resolve, reject });
+        }).then((token) => {
+          originalRequest.headers = originalRequest.headers || {};
+          (originalRequest.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+          return api(originalRequest);
+        });
+      }
+
+      // Mark as retrying
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      try {
+        // Call refresh endpoint - it will use the HttpOnly cookie automatically
+        const response = await api.post('/auth/refresh');
+        const { accessToken } = response.data.data;
+
+        // Update the access token in localStorage
+        localStorage.setItem('authToken', accessToken);
+
+        // Process queued requests
+        processQueue(null, accessToken);
+
+        // Retry the original request with new token
+        originalRequest.headers = originalRequest.headers || {};
+        (originalRequest.headers as Record<string, string>)['Authorization'] = `Bearer ${accessToken}`;
+        return api(originalRequest);
+      } catch (refreshError) {
+        // Refresh failed - process queue with error
+        processQueue(refreshError as AxiosError, undefined);
+        
+        // Clear tokens and redirect to login
+        localStorage.removeItem('authToken');
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      } finally {
+        isRefreshing = false;
+      }
+    }
+
+    // For other 401 errors (not token expiry), clear tokens
     if (error.response?.status === 401) {
-      // Token expired or invalid
       const token = localStorage.getItem('authToken');
       // Don't clear dev bypass token
       if (token !== 'dev-mock-token-123') {
         localStorage.removeItem('authToken');
-        window.location.href = '/login';
+        // Only redirect if not already on login page
+        if (!window.location.pathname.includes('/login')) {
+          window.location.href = '/login';
+        }
       }
     }
     return Promise.reject(error);

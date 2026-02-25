@@ -3,6 +3,8 @@ import jwt from "jsonwebtoken";
 import { body, validationResult } from "express-validator";
 import bcrypt from "bcryptjs";
 import { eq, and } from "drizzle-orm";
+import path from "path";
+import { fileURLToPath } from 'url';
 import db from "../config/db.js";
 import { users, categories, deviceSessions, securityEvents } from "../db/schema.js";
 import { protect } from "../middleware/auth.js";
@@ -19,7 +21,8 @@ import {
   revokeDeviceSession, 
   revokeAllUserSessions,
   getUserSessions,
-  blacklistToken
+  blacklistToken,
+  REFRESH_TOKEN_COOKIE_OPTIONS
 } from "../services/tokenService.js";
 import {
   generateMFASecret,
@@ -33,6 +36,14 @@ import {
   isValidMFAToken,
 } from "../utils/mfa.js";
 import securityService from "../services/securityService.js";
+import { logAudit, AuditActions, ResourceTypes } from "../middleware/auditLogger.js";
+
+// Get __dirname equivalent for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// User storage quota (10MB)
+const USER_STORAGE_QUOTA = 10 * 1024 * 1024; // 10MB
 
 const router = express.Router();
 
@@ -316,9 +327,15 @@ router.post(
       status: 'success',
     });
 
+    // Set refresh token as HttpOnly cookie
+    res.cookie('refreshToken', tokens.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+
+    // Return response WITHOUT the refresh token in the body (it's in the cookie)
     res.created({
       user: getPublicProfile(newUser),
-      ...tokens,
+      accessToken: tokens.accessToken,
+      sessionId: tokens.sessionId,
+      expiresIn: tokens.expiresIn,
     }, "User registered successfully");
   })
 );
@@ -557,12 +574,18 @@ router.post(
         status: 'success',
       });
 
+      // Set refresh token as HttpOnly cookie
+      res.cookie('refreshToken', tokens.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+
+      // Return response WITHOUT the refresh token in the body (it's in the cookie)
       res.json({
         success: true,
         message: "Login successful",
         data: {
           user: getPublicProfile(user),
-          ...tokens,
+          accessToken: tokens.accessToken,
+          sessionId: tokens.sessionId,
+          expiresIn: tokens.expiresIn,
         },
       });
   })
@@ -788,33 +811,40 @@ router.put(
 );
 
 // @route   POST /api/auth/refresh
-// @desc    Refresh access token using refresh token
+// @desc    Refresh access token using refresh token (reads from HttpOnly cookie)
 // @access  Public
 router.post("/refresh", 
-  [
-    body("refreshToken").notEmpty().withMessage("Refresh token is required"),
-  ],
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      throw new ValidationError("Validation failed", errors.array());
+    // Read refresh token from HttpOnly cookie (not from request body)
+    const refreshToken = req.cookies?.refreshToken;
+    
+    if (!refreshToken) {
+      throw new ValidationError("Refresh token not found. Please login again.");
     }
 
-    const { refreshToken } = req.body;
     const ipAddress = req.ip || req.connection.remoteAddress;
     
+    // This will perform token rotation and return new tokens
     const tokens = await refreshAccessToken(refreshToken, ipAddress);
     
+    // Set new refresh token as HttpOnly cookie
+    res.cookie('refreshToken', tokens.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
+    
+    // Return response WITHOUT the refresh token in the body (it's in the cookie)
     res.json({
       success: true,
       message: "Token refreshed successfully",
-      data: tokens,
+      data: {
+        accessToken: tokens.accessToken,
+        expiresIn: tokens.expiresIn,
+        sessionId: tokens.sessionId,
+      },
     });
   })
 );
 
 // @route   POST /api/auth/logout
-// @desc    Logout user from current device
+// @desc    Logout user from current device and clear refresh token cookie
 // @access  Private
 router.post("/logout", protect, asyncHandler(async (req, res) => {
   const sessionId = req.sessionId;
@@ -831,6 +861,14 @@ router.post("/logout", protect, asyncHandler(async (req, res) => {
     resourceType: ResourceTypes.SESSION,
     resourceId: sessionId,
     status: 'success',
+  });
+  
+  // Clear the refresh token cookie
+  res.clearCookie('refreshToken', {
+    path: '/',
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
   });
   
   res.json({ 

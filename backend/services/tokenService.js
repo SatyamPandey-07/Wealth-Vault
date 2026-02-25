@@ -1,19 +1,29 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { eq, and, lt } from 'drizzle-orm';
+import { eq, and, lt, ne } from 'drizzle-orm';
 import db from '../config/db.js';
 import { deviceSessions, tokenBlacklist, users } from '../db/schema.js';
 import { getRedisClient } from '../config/redis.js';
 
 /**
- * Enhanced Token Management Service
+ * Enhanced Token Management Service with Refresh Token Rotation
  * Handles access tokens, refresh tokens, device sessions, and blacklisting
+ * Implements token rotation and reuse detection for enhanced security
  */
 
 // Token expiration times
 const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_EXPIRY = '7d';
 const DEVICE_SESSION_EXPIRY = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+// Cookie options for refresh token
+export const REFRESH_TOKEN_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'strict',
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
+  path: '/',
+};
 
 /**
  * Generate access token (short-lived)
@@ -40,6 +50,13 @@ export const generateAccessToken = (userId, sessionId) => {
  */
 export const generateRefreshToken = () => {
   return crypto.randomBytes(64).toString('hex');
+};
+
+/**
+ * Generate a unique token family ID for tracking rotated tokens
+ */
+export const generateTokenFamilyId = () => {
+  return crypto.randomUUID();
 };
 
 /**
@@ -80,7 +97,10 @@ export const createDeviceSession = async (userId, deviceInfo, ipAddress) => {
 };
 
 /**
- * Refresh access token using refresh token
+ * Refresh access token using refresh token WITH TOKEN ROTATION
+ * This implements:
+ * 1. Token rotation - new refresh token generated on each use
+ * 2. Reuse detection - if a rotated token is reused, invalidate all sessions
  */
 export const refreshAccessToken = async (refreshToken, ipAddress) => {
   // Find active session with refresh token
@@ -99,31 +119,46 @@ export const refreshAccessToken = async (refreshToken, ipAddress) => {
     throw new Error('Invalid or expired refresh token');
   }
 
-  // Check if refresh token is blacklisted
+  // Check if refresh token is blacklisted (for rotated tokens)
   const [blacklistedToken] = await db
     .select()
     .from(tokenBlacklist)
     .where(eq(tokenBlacklist.token, refreshToken));
 
   if (blacklistedToken) {
-    throw new Error('Refresh token has been revoked');
+    // TOKEN REUSE DETECTED! This is a security attack
+    // Invalidate ALL user sessions for security
+    console.warn(`⚠️ TOKEN REUSE DETECTED for user ${session.userId}. Invalidating all sessions.`);
+    await revokeAllUserSessions(session.userId, 'token_reuse_detected');
+    throw new Error('Token reuse detected. All sessions have been invalidated for security.');
   }
+
+  // TOKEN ROTATION: Generate new refresh token
+  const newRefreshToken = generateRefreshToken();
+  const newExpiresAt = new Date(Date.now() + DEVICE_SESSION_EXPIRY);
+  
+  // Blacklist the old refresh token (it's now rotated)
+  await blacklistToken(refreshToken, 'refresh', session.userId, 'rotation');
 
   // Generate new access token
   const newAccessToken = generateAccessToken(session.userId, session.id);
   
-  // Update session activity and access token
+  // Update session with new tokens
   await db.update(deviceSessions)
     .set({ 
       accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
       lastActivity: new Date(),
-      ipAddress: ipAddress || session.ipAddress
+      ipAddress: ipAddress || session.ipAddress,
+      expiresAt: newExpiresAt
     })
     .where(eq(deviceSessions.id, session.id));
 
   return {
     accessToken: newAccessToken,
+    refreshToken: newRefreshToken,
     expiresIn: 15 * 60, // 15 minutes in seconds
+    refreshExpiresIn: 7 * 24 * 60 * 60, // 7 days in seconds
     sessionId: session.id,
   };
 };
@@ -327,4 +362,5 @@ export default {
   getUserSessions,
   cleanupExpiredTokens,
   verifyAccessToken,
+  REFRESH_TOKEN_COOKIE_OPTIONS,
 };
