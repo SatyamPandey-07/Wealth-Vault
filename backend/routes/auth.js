@@ -594,40 +594,24 @@ router.post(
 // @route   GET /api/auth/me
 // @desc    Get current user profile
 // @access  Private
-router.get("/me", protect, async (req, res) => {
-  try {
-    const userId = req.user.id;
+router.get("/me", protect, asyncHandler(async (req, res) => {
+  const userId = req.user.id;
 
-    // Fetch user with categories using relational query if possible, or separate queries
-    // Drizzle relations allows db.query.users.findFirst
-    const user = await db.query.users.findFirst({
-      where: eq(users.id, userId),
-      with: {
-        categories: true,
-      },
-    });
+  // Fetch user with categories using relational query if possible, or separate queries
+  // Drizzle relations allows db.query.users.findFirst
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+    with: {
+      categories: true,
+    },
+  });
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        user: getPublicProfile(user),
-      },
-    });
-  } catch (error) {
-    console.error("Get profile error:", error);
-    res.status(500).json({
-      success: false,
-      message: error.message || "Server error while fetching profile",
-    });
+  if (!user) {
+    throw new NotFoundError('User');
   }
-});
+
+  return res.success({ user: getPublicProfile(user) }, 'Profile retrieved successfully');
+}));
 
 // @route   PUT /api/auth/profile
 // @desc    Update user profile
@@ -645,68 +629,52 @@ router.put(
     body("monthlyBudget").optional().isFloat({ min: 0 }),
     body("emergencyFund").optional().isFloat({ min: 0 }),
   ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, errors: errors.array() });
-      }
-
-      const updateFields = {};
-      const allowedFields = [
-        "firstName",
-        "lastName",
-        "profilePicture",
-        "dateOfBirth",
-        "phoneNumber",
-        "currency",
-        "monthlyIncome",
-        "monthlyBudget",
-        "emergencyFund",
-        "preferences",
-      ];
-
-      allowedFields.forEach((field) => {
-        if (req.body[field] !== undefined) {
-          updateFields[field] = req.body[field];
-        }
-      });
-
-      updateFields.updatedAt = new Date();
-
-      const [updatedUser] = await db
-        .update(users)
-        .set(updateFields)
-        .where(eq(users.id, req.user.id))
-        .returning();
-
-      // Log profile update
-      logAudit(req, {
-        userId: req.user.id,
-        action: AuditActions.PROFILE_UPDATE,
-        resourceType: ResourceTypes.USER,
-        resourceId: req.user.id,
-        metadata: { updatedFields: Object.keys(updateFields).filter(f => f !== 'updatedAt') },
-        status: 'success',
-      });
-
-      res.json({
-        success: true,
-        message: "Profile updated successfully",
-        data: {
-          user: getPublicProfile(updatedUser),
-        },
-      });
-    } catch (error) {
-      console.error("Profile update error:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while updating profile",
-        });
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new ValidationError("Validation failed", errors.array());
     }
-  }
+
+    const updateFields = {};
+    const allowedFields = [
+      "firstName",
+      "lastName",
+      "profilePicture",
+      "dateOfBirth",
+      "phoneNumber",
+      "currency",
+      "monthlyIncome",
+      "monthlyBudget",
+      "emergencyFund",
+      "preferences",
+    ];
+
+    allowedFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        updateFields[field] = req.body[field];
+      }
+    });
+
+    updateFields.updatedAt = new Date();
+
+    const [updatedUser] = await db
+      .update(users)
+      .set(updateFields)
+      .where(eq(users.id, req.user.id))
+      .returning();
+
+    // Log profile update
+    logAudit(req, {
+      userId: req.user.id,
+      action: AuditActions.PROFILE_UPDATE,
+      resourceType: ResourceTypes.USER,
+      resourceId: req.user.id,
+      metadata: { updatedFields: Object.keys(updateFields).filter(f => f !== 'updatedAt') },
+      status: 'success',
+    });
+
+    return res.success({ user: getPublicProfile(updatedUser) }, "Profile updated successfully");
+  })
 );
 
 // @route   PUT /api/auth/change-password
@@ -719,95 +687,69 @@ router.put(
     body("currentPassword").notEmpty(),
     body("newPassword").isLength({ min: 6 }),
   ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, errors: errors.array() });
-      }
-
-      const { currentPassword, newPassword } = req.body;
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, req.user.id));
-
-      const isMatch = await bcrypt.compare(currentPassword, user.password);
-      if (!isMatch) {
-        return res
-          .status(400)
-          .json({ success: false, message: "Current password is incorrect" });
-      }
-
-      // Check if new password is the same as current password
-      if (currentPassword === newPassword) {
-        return res.status(400).json({
-          success: false,
-          message: "New password must be different from current password",
-        });
-      }
-
-      // Check if password is common
-      if (isCommonPassword(newPassword)) {
-        return res.status(400).json({
-          success: false,
-          message: "This password is too common. Please choose a more secure password.",
-        });
-      }
-
-      // Validate new password strength
-      const passwordValidation = validatePasswordStrength(newPassword, [user.email, user.firstName, user.lastName]);
-      if (!passwordValidation.success) {
-        return res.status(400).json({
-          success: false,
-          message: passwordValidation.message,
-          feedback: passwordValidation.feedback,
-          score: passwordValidation.score,
-        });
-      }
-
-      const salt = await bcrypt.genSalt(12);
-      const hashedPassword = await bcrypt.hash(newPassword, salt);
-
-      await db
-        .update(users)
-        .set({ password: hashedPassword, updatedAt: new Date() })
-        .where(eq(users.id, user.id));
-
-      // Revoke all other sessions for security
-      const currentSessionId = req.sessionId;
-      const allSessions = await getUserSessions(user.id);
-      
-      for (const session of allSessions) {
-        if (session.id !== currentSessionId) {
-          await revokeDeviceSession(session.id, user.id, 'password_change');
-        }
-      }
-
-      // Log password change
-      logAudit(req, {
-        userId: user.id,
-        action: AuditActions.AUTH_PASSWORD_CHANGE,
-        resourceType: ResourceTypes.USER,
-        resourceId: user.id,
-        metadata: { sessionsRevoked: allSessions.length - 1 },
-        status: 'success',
-      });
-
-      res.json({
-        success: true,
-        message: "Password changed successfully. Other sessions have been logged out for security.",
-      });
-    } catch (error) {
-      console.error("Password change error:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while changing password",
-        });
+  asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new ValidationError("Validation failed", errors.array());
     }
-  }
+
+    const { currentPassword, newPassword } = req.body;
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, req.user.id));
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      throw new ValidationError("Current password is incorrect");
+    }
+
+    // Check if new password is the same as current password
+    if (currentPassword === newPassword) {
+      throw new ValidationError("New password must be different from current password");
+    }
+
+    // Check if password is common
+    if (isCommonPassword(newPassword)) {
+      throw new ValidationError("This password is too common. Please choose a more secure password.");
+    }
+
+    // Validate new password strength
+    const passwordValidation = validatePasswordStrength(newPassword, [user.email, user.firstName, user.lastName]);
+    if (!passwordValidation.success) {
+      throw new ValidationError(passwordValidation.message, passwordValidation.feedback);
+    }
+
+    const salt = await bcrypt.genSalt(12);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    await db
+      .update(users)
+      .set({ password: hashedPassword, updatedAt: new Date() })
+      .where(eq(users.id, user.id));
+
+    // Revoke all other sessions for security
+    const currentSessionId = req.sessionId;
+    const allSessions = await getUserSessions(user.id);
+    
+    for (const session of allSessions) {
+      if (session.id !== currentSessionId) {
+        await revokeDeviceSession(session.id, user.id, 'password_change');
+      }
+    }
+
+    // Log password change
+    logAudit(req, {
+      userId: user.id,
+      action: AuditActions.AUTH_PASSWORD_CHANGE,
+      resourceType: ResourceTypes.USER,
+      resourceId: user.id,
+      metadata: { sessionsRevoked: allSessions.length - 1 },
+      status: 'success',
+    });
+
+    return res.success(null, "Password changed successfully. Other sessions have been logged out for security.");
+  })
 );
 
 // @route   POST /api/auth/refresh

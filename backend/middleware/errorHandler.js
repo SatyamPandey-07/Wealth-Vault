@@ -138,6 +138,10 @@ export const errorHandler = (err, req, res, next) => {
   }
 
   // Default server error
+  const errorDetails = process.env.NODE_ENV === 'development' 
+    ? { stack: err.stack } 
+    : null;
+  
   return errorResponse(
     res,
     process.env.NODE_ENV === 'production' 
@@ -145,7 +149,7 @@ export const errorHandler = (err, req, res, next) => {
       : err.message,
     HTTP_STATUS.INTERNAL_SERVER_ERROR,
     ERROR_CODES.INTERNAL_ERROR,
-    process.env.NODE_ENV === 'development' ? { stack: err.stack } : null
+    errorDetails
   );
 };
 
