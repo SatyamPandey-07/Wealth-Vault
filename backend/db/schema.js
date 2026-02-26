@@ -4515,3 +4515,31 @@ export const workflowExecutionLogsRelations = relations(workflowExecutionLogs, (
     user: one(users, { fields: [workflowExecutionLogs.userId], references: [users.id] }),
     workflow: one(autopilotWorkflows, { fields: [workflowExecutionLogs.workflowId], references: [autopilotWorkflows.id] }),
 }));
+
+// ============================================================================
+// STRESS TESTING & TOPOLOGY VISUALIZER (#465)
+// ============================================================================
+
+export const topologySnapshots = pgTable('topology_snapshots', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    nodeCount: integer('node_count').notNull(),
+    linkCount: integer('link_count').notNull(),
+    totalNetworkWealth: numeric('total_network_wealth', { precision: 15, scale: 2 }).notNull(),
+    maxFragilityIndex: numeric('max_fragility_index', { precision: 8, scale: 4 }),
+    graphData: jsonb('graph_data').notNull(), // D3 compatible JSON
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const stressTestSimulations = pgTable('stress_test_simulations', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    targetVaultId: uuid('target_vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    shockPercentage: numeric('shock_percentage', { precision: 5, scale: 2 }).notNull(), // 0 to 100
+    totalNetworkLoss: numeric('total_network_loss', { precision: 15, scale: 2 }).notNull(),
+    insolventVaultsCount: integer('insolvent_vaults_count').default(0),
+    maxImpactLevel: integer('max_impact_level').default(0), // How deep the shock propagated
+    results: jsonb('results').notNull(), // Vault by vault impacts
+    isSystemTriggered: boolean('is_system_triggered').default(false),
+    createdAt: timestamp('created_at').defaultNow(),
+});
