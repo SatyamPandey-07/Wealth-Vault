@@ -4,6 +4,7 @@ import { protect } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import liquidityService from '../services/liquidityService.js';
 import runwayEngine from '../services/runwayEngine.js';
+import liquidityOptimizerService from '../services/liquidityOptimizerService.js';
 
 const router = express.Router();
 
@@ -202,6 +203,40 @@ router.get(
                 },
                 recentRescues
             }
+        });
+    })
+);
+
+/**
+ * @route   POST /api/liquidity/optimal-route
+ * @desc    Find the most capital-efficient path for moving liquidity (#476)
+ * @access  Private
+ */
+router.post(
+    '/optimal-route',
+    protect,
+    [
+        body('sourceVaultId').isUUID().withMessage('Source vault ID must be a valid UUID'),
+        body('destVaultId').isUUID().withMessage('Destination vault ID must be a valid UUID'),
+        body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
+    ],
+    asyncHandler(async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ success: false, errors: errors.array() });
+        }
+
+        const { sourceVaultId, destVaultId, amount } = req.body;
+        const result = await liquidityOptimizerService.findOptimalRoute(
+            req.user.id,
+            sourceVaultId,
+            destVaultId,
+            parseFloat(amount)
+        );
+
+        res.json({
+            success: true,
+            data: result
         });
     })
 );

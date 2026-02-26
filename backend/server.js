@@ -127,6 +127,8 @@ import { securityGuard } from "./middleware/securityGuard.js";
 import { auditRequestIdMiddleware } from "./middleware/auditMiddleware.js";
 import { initializeDefaultTaxCategories } from "./services/taxService.js";
 import marketData from "./services/marketData.js";
+import liquidityGraphRoutes from "./routes/liquidityGraph.js";
+import precomputePathsJob from "./jobs/precomputePaths.js";
 
 // Event Listeners
 import { initializeBudgetListeners } from "./listeners/budgetListeners.js";
@@ -338,8 +340,8 @@ app.use("/api/escrow", userLimiter, escrowRoutes);
 app.use("/api/risk-lab", userLimiter, riskLabRoutes);
 app.use("/api/corporate", userLimiter, corporateRoutes);
 app.use("/api/succession-plan", userLimiter, successionApiRoutes);
-app.use("/api/compliance", userLimiter, complianceRoutes);
-
+app.use("/api/compliance", complianceRoutes);
+app.use("/api/liquidity/graph", userLimiter, liquidityGraphRoutes);
 
 
 
@@ -446,6 +448,8 @@ if (process.env.NODE_ENV !== 'test') {
       console.warn('⚠️ Market indices initialization skipped:', err.message);
     });
   });
+
+  precomputePathsJob.start();
 }
 
 export default app;

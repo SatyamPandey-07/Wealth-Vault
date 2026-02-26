@@ -8,6 +8,7 @@ import liquidityOptimizerService from '../services/liquidityOptimizerService.js'
 import db from '../config/db.js';
 import { creditLines, liquidityProjections, liquidityOptimizerActions } from '../db/schema.js';
 import { eq, and, desc } from 'drizzle-orm';
+import { validateRouteRequest } from '../middleware/routeValidator.js';
 
 const router = express.Router();
 
@@ -180,15 +181,10 @@ router.post('/arbitrage/rebalance', protect, asyncHandler(async (req, res) => {
  * @desc    Find the most capital-efficient path for moving liquidity (#476)
  * @access  Private
  */
-router.post('/optimal-route', protect, [
-    body('sourceVaultId').isUUID().withMessage('Source vault ID must be a valid UUID'),
-    body('destVaultId').isUUID().withMessage('Destination vault ID must be a valid UUID'),
-    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
-], asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) throw new AppError(400, 'Validation failed', errors.array());
-
+router.post('/optimal-route', protect, validateRouteRequest, asyncHandler(async (req, res) => {
     const { sourceVaultId, destVaultId, amount } = req.body;
+
+    // Result calculation using the service
     const result = await liquidityOptimizerService.findOptimalRoute(
         req.user.id,
         sourceVaultId,
