@@ -175,4 +175,28 @@ router.post('/arbitrage/rebalance', protect, asyncHandler(async (req, res) => {
     return new ApiResponse(200, null, 'Arbitrage rebalance cycle completed').send(res);
 }));
 
+/**
+ * @route   POST /api/liquidity/optimal-route
+ * @desc    Find the most capital-efficient path for moving liquidity (#476)
+ * @access  Private
+ */
+router.post('/optimal-route', protect, [
+    body('sourceVaultId').isUUID().withMessage('Source vault ID must be a valid UUID'),
+    body('destVaultId').isUUID().withMessage('Destination vault ID must be a valid UUID'),
+    body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be a positive number')
+], asyncHandler(async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) throw new AppError(400, 'Validation failed', errors.array());
+
+    const { sourceVaultId, destVaultId, amount } = req.body;
+    const result = await liquidityOptimizerService.findOptimalRoute(
+        req.user.id,
+        sourceVaultId,
+        destVaultId,
+        parseFloat(amount)
+    );
+
+    return new ApiResponse(200, result, 'Optimal route calculated successfully').send(res);
+}));
+
 export default router;

@@ -8,9 +8,10 @@ import {
     users,
     expenses
 } from '../db/schema.js';
-import { eq, and, gte, desc } from 'drizzle-orm';
+import { eq, and, gte, desc, sql } from 'drizzle-orm';
 import runwayEngine from './runwayEngine.js';
 import taxService from './taxService.js';
+import { vaults, vaultBalances, entities, internalDebts, marketRatesOracle } from '../db/schema.js';
 
 /**
  * Liquidity Optimizer Service (L3)
@@ -282,6 +283,172 @@ class LiquidityOptimizerService {
             console.error('Action execution failed:', error);
             throw error;
         }
+    }
+
+    /**
+     * MILP-Based Cross-Border Liquidity Transfer Optimizer (#476)
+     * Finds the most capital-efficient path for moving liquidity.
+     */
+    async findOptimalRoute(userId, sourceVaultId, destVaultId, amount) {
+        try {
+            // 1. Fetch environment data
+            const [userVaults, userEntities, allDebts, fxRates] = await Promise.all([
+                db.select().from(vaults).where(eq(vaults.ownerId, userId)),
+                db.select().from(entities).where(eq(entities.userId, userId)),
+                db.select().from(internalDebts).where(eq(internalDebts.userId, userId)),
+                db.select().from(marketRatesOracle)
+            ]);
+
+            // 2. Build the Graph
+            // Nodes are vault IDs
+            // Edges represent transfer paths with efficiencies
+            const nodes = userVaults.map(v => v.id);
+            const edges = [];
+
+            // A. Direct Transfer Edges (Bank/FX)
+            for (const vFrom of userVaults) {
+                for (const vTo of userVaults) {
+                    if (vFrom.id === vTo.id) continue;
+
+                    let efficiency = 1.0;
+                    const fromCurrency = vFrom.currency;
+                    const toCurrency = vTo.currency;
+
+                    // FX Efficiency
+                    if (fromCurrency !== toCurrency) {
+                        const rate = fxRates.find(r => r.baseCurrency === fromCurrency && r.quoteCurrency === toCurrency);
+                        if (rate && rate.bidRate && rate.midRate) {
+                            efficiency *= (parseFloat(rate.bidRate) / parseFloat(rate.midRate));
+                        } else {
+                            efficiency *= 0.998; // Default 0.2% spread
+                        }
+                    }
+
+                    // Bank Fee Efficiency (Simulated base cost)
+                    efficiency *= 0.999; // 0.1% bank fee
+
+                    // Inter-Entity Tax Efficiency
+                    const entityFrom = userEntities.find(e => e.metadata?.vaultIds?.includes(vFrom.id));
+                    const entityTo = userEntities.find(e => e.metadata?.vaultIds?.includes(vTo.id));
+                    if (entityFrom && entityTo && entityFrom.id !== entityTo.id) {
+                        const taxRate = this.getWithholdingRate(entityFrom.type, entityTo.type);
+                        efficiency *= (1 - taxRate);
+                    }
+
+                    edges.push({
+                        from: vFrom.id,
+                        to: vTo.id,
+                        efficiency,
+                        type: 'direct_transfer',
+                        description: `Transfer from ${vFrom.name} to ${vTo.name}`
+                    });
+                }
+            }
+
+            // B. Internal Debt Settlement Edges (Repayment/Forgiveness)
+            // If V_A owes V_B, moving money from A to B is a repayment.
+            for (const debt of allDebts) {
+                if (debt.status !== 'active') continue;
+
+                // Edge: Borrower -> Lender (Moving money TO lender by repaying)
+                edges.push({
+                    from: debt.borrowerVaultId,
+                    to: debt.lenderVaultId,
+                    efficiency: 1.0, // High efficiency (clearing internal liability)
+                    type: 'debt_repayment',
+                    description: `Repay internal debt from ${debt.borrowerVaultId.substring(0, 8)} to ${debt.lenderVaultId.substring(0, 8)}`,
+                    debtId: debt.id
+                });
+
+                // Edge: Lender -> Borrower (Forgiving debt to "move" liquidity)
+                // In some jurisdictions, forgiving debt acts as a distribution/gift
+                edges.push({
+                    from: debt.lenderVaultId,
+                    to: debt.borrowerVaultId,
+                    efficiency: 0.995, // Slight cost (accounting overhead/potential gift tax)
+                    type: 'debt_forgiveness',
+                    description: `Forgive internal debt to ${debt.borrowerVaultId.substring(0, 8)}`,
+                    debtId: debt.id
+                });
+            }
+
+            // 3. Solve for Optimal Path using Bellman-Ford (Maximizing efficiency)
+            // Transforming to: Minimize Σ -log(efficiency)
+            const distances = {};
+            const previous = {};
+            const edgeInfo = {};
+
+            nodes.forEach(n => {
+                distances[n] = Infinity;
+                previous[n] = null;
+            });
+            distances[sourceVaultId] = 0;
+
+            for (let i = 0; i < nodes.length - 1; i++) {
+                for (const edge of edges) {
+                    const weight = -Math.log(edge.efficiency);
+                    if (distances[edge.from] + weight < distances[edge.to]) {
+                        distances[edge.to] = distances[edge.from] + weight;
+                        previous[edge.to] = edge.from;
+                        edgeInfo[edge.to] = edge;
+                    }
+                }
+            }
+
+            // 4. Reconstruct Path
+            const path = [];
+            let curr = destVaultId;
+            while (curr && curr !== sourceVaultId) {
+                const info = edgeInfo[curr];
+                if (!info) break;
+                path.unshift(info);
+                curr = previous[curr];
+            }
+
+            if (curr !== sourceVaultId && nodes.length > 0) {
+                throw new Error('No path found between the specified vaults.');
+            }
+
+            const totalEfficiency = Math.exp(-distances[destVaultId]);
+            const finalAmount = amount * totalEfficiency;
+
+            return {
+                sourceVaultId,
+                destVaultId,
+                requestedAmount: amount,
+                estimatedArrivalAmount: finalAmount.toFixed(2),
+                totalEfficiency: (totalEfficiency * 100).toFixed(4) + '%',
+                path: path.map(p => ({
+                    step: p.description,
+                    type: p.type,
+                    efficiency: (p.efficiency * 100).toFixed(4) + '%',
+                    metadata: p.debtId ? { debtId: p.debtId } : {}
+                }))
+            };
+
+        } catch (error) {
+            console.error('Optimal route calculation failed:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Determines the withholding tax rate between different entity types
+     */
+    getWithholdingRate(fromType, toType) {
+        if (fromType === toType) return 0.0;
+
+        // Simple logic: Distributions from Corp/LLC to Personal have withholding
+        if (toType === 'personal') {
+            if (fromType === 'corp') return 0.15; // 15% dividend tax
+            if (fromType === 'trust') return 0.0; // Trust distributions often pass through
+            if (fromType === 'llc') return 0.05; // 5% self-employment/draw tax
+        }
+
+        // Inter-company transfers
+        if (fromType === 'corp' && toType === 'llc') return 0.21; // Corporate income tax
+
+        return 0.02; // Default 2% friction for mismatched entities
     }
 }
 
