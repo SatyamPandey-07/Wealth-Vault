@@ -129,6 +129,8 @@ import { securityGuard } from "./middleware/securityGuard.js";
 import { auditRequestIdMiddleware } from "./middleware/auditMiddleware.js";
 import { initializeDefaultTaxCategories } from "./services/taxService.js";
 import marketData from "./services/marketData.js";
+import auditTrailSealer from "./jobs/auditTrailSealer.js";
+import auditIntegrityScanner from "./jobs/auditIntegrityScanner.js";
 
 // Event Listeners
 import { initializeBudgetListeners } from "./listeners/budgetListeners.js";
@@ -370,6 +372,9 @@ app.use(globalErrorHandler);
 const PORT = process.env.PORT || 5000;
 
 if (process.env.NODE_ENV !== 'test') {
+  auditTrailSealer.start();
+  auditIntegrityScanner.start();
+
   app.listen(PORT, () => {
     logInfo('Server started successfully', {
       port: PORT,
