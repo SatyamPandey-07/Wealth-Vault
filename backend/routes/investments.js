@@ -5,6 +5,7 @@ import investmentService from '../services/investmentService.js';
 import portfolioService from '../services/portfolioService.js';
 import priceService from '../services/priceService.js';
 import investmentAnalyticsService from '../services/investmentAnalyticsService.js';
+import portfolioRebalancingService from '../services/portfolioRebalancingService.js';
 
 const router = express.Router();
 
@@ -570,6 +571,218 @@ router.post('/portfolios/:id/optimize', [
     res.status(500).json({
       success: false,
       message: 'Failed to optimize portfolio',
+    });
+  }
+});
+
+/**
+ * @route GET /api/investments/portfolios/:id/rebalancing/alerts
+ * @desc Get rebalancing alerts for a portfolio
+ * @access Private
+ */
+router.get('/portfolios/:id/rebalancing/alerts', [
+  param('id').isUUID(),
+  query('threshold').optional().isFloat({ min: 0, max: 100 }),
+  query('includeResolved').optional().isBoolean(),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const threshold = parseFloat(req.query.threshold) || 5;
+    const includeResolved = req.query.includeResolved === 'true';
+    
+    const alerts = await portfolioRebalancingService.getRebalancingAlerts(
+      req.params.id,
+      req.user.id,
+      threshold,
+      includeResolved
+    );
+
+    res.json({
+      success: true,
+      data: alerts,
+    });
+  } catch (error) {
+    console.error('Error fetching rebalancing alerts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch rebalancing alerts',
+    });
+  }
+});
+
+/**
+ * @route GET /api/investments/portfolios/:id/rebalancing/recommendations
+ * @desc Get rebalancing recommendations for a portfolio
+ * @access Private
+ */
+router.get('/portfolios/:id/rebalancing/recommendations', [
+  param('id').isUUID(),
+  query('threshold').optional().isFloat({ min: 0, max: 100 }),
+  query('optimizationEnabled').optional().isBoolean(),
+  query('taxEfficient').optional().isBoolean(),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const options = {
+      threshold: parseFloat(req.query.threshold) || 5,
+      optimizationEnabled: req.query.optimizationEnabled === 'true',
+      taxEfficient: req.query.taxEfficient === 'true',
+    };
+    
+    const recommendations = await portfolioRebalancingService.getRebalancingRecommendations(
+      req.params.id,
+      req.user.id,
+      options
+    );
+
+    res.json({
+      success: true,
+      data: recommendations,
+    });
+  } catch (error) {
+    console.error('Error fetching rebalancing recommendations:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch rebalancing recommendations',
+    });
+  }
+});
+
+/**
+ * @route POST /api/investments/portfolios/:id/rebalancing/execute
+ * @desc Execute a rebalancing action
+ * @access Private
+ */
+router.post('/portfolios/:id/rebalancing/execute', [
+  param('id').isUUID(),
+  body('actions').isArray(),
+  body('notes').optional().isLength({ max: 500 }),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const rebalanceData = {
+      actions: req.body.actions,
+      notes: req.body.notes,
+      afterAllocation: req.body.afterAllocation,
+      afterValue: req.body.afterValue,
+      expectedImprovement: req.body.expectedImprovement,
+    };
+    
+    const result = await portfolioRebalancingService.executeRebalancing(
+      req.params.id,
+      req.user.id,
+      rebalanceData
+    );
+
+    res.json({
+      success: true,
+      message: 'Rebalancing executed successfully',
+      data: result,
+    });
+  } catch (error) {
+    console.error('Error executing rebalancing:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to execute rebalancing',
+    });
+  }
+});
+
+/**
+ * @route GET /api/investments/portfolios/:id/rebalancing/history
+ * @desc Get rebalancing history for a portfolio
+ * @access Private
+ */
+router.get('/portfolios/:id/rebalancing/history', [
+  param('id').isUUID(),
+  query('limit').optional().isInt({ min: 1, max: 100 }),
+  query('offset').optional().isInt({ min: 0 }),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const options = {
+      limit: parseInt(req.query.limit) || 20,
+      offset: parseInt(req.query.offset) || 0,
+    };
+    
+    const history = await portfolioRebalancingService.getRebalancingHistory(
+      req.params.id,
+      req.user.id,
+      options
+    );
+
+    res.json({
+      success: true,
+      data: history,
+    });
+  } catch (error) {
+    console.error('Error fetching rebalancing history:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch rebalancing history',
+    });
+  }
+});
+
+/**
+ * @route GET /api/investments/portfolios/:id/rebalancing/settings
+ * @desc Get rebalancing settings for a portfolio
+ * @access Private
+ */
+router.get('/portfolios/:id/rebalancing/settings', [
+  param('id').isUUID(),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const settings = await portfolioRebalancingService.getRebalancingSettings(
+      req.params.id,
+      req.user.id
+    );
+
+    res.json({
+      success: true,
+      data: settings,
+    });
+  } catch (error) {
+    console.error('Error fetching rebalancing settings:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch rebalancing settings',
+    });
+  }
+});
+
+/**
+ * @route PUT /api/investments/portfolios/:id/rebalancing/settings
+ * @desc Update rebalancing settings for a portfolio
+ * @access Private
+ */
+router.put('/portfolios/:id/rebalancing/settings', [
+  param('id').isUUID(),
+  body('threshold').optional().isFloat({ min: 0, max: 100 }),
+  body('autoRebalance').optional().isBoolean(),
+  body('rebalanceFrequency').optional().isIn(['daily', 'weekly', 'monthly', 'quarterly', 'annually']),
+  body('notifyOnDrift').optional().isBoolean(),
+  body('highPriorityThreshold').optional().isFloat({ min: 0, max: 100 }),
+  handleValidationErrors,
+], async (req, res) => {
+  try {
+    const settings = await portfolioRebalancingService.updateRebalancingSettings(
+      req.params.id,
+      req.user.id,
+      req.body
+    );
+
+    res.json({
+      success: true,
+      message: 'Rebalancing settings updated successfully',
+      data: settings,
+    });
+  } catch (error) {
+    console.error('Error updating rebalancing settings:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update rebalancing settings',
     });
   }
 });
