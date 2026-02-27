@@ -8,6 +8,7 @@ import liquidityOptimizerService from '../services/liquidityOptimizerService.js'
 import db from '../config/db.js';
 import { creditLines, liquidityProjections, liquidityOptimizerActions } from '../db/schema.js';
 import { eq, and, desc } from 'drizzle-orm';
+import { validateRouteRequest } from '../middleware/routeValidator.js';
 
 const router = express.Router();
 
@@ -173,6 +174,25 @@ router.post('/arbitrage/rebalance', protect, asyncHandler(async (req, res) => {
 
     await arbitrageEngine.optimizeForUser(req.user.id, strategy);
     return new ApiResponse(200, null, 'Arbitrage rebalance cycle completed').send(res);
+}));
+
+/**
+ * @route   POST /api/liquidity/optimal-route
+ * @desc    Find the most capital-efficient path for moving liquidity (#476)
+ * @access  Private
+ */
+router.post('/optimal-route', protect, validateRouteRequest, asyncHandler(async (req, res) => {
+    const { sourceVaultId, destVaultId, amount } = req.body;
+
+    // Result calculation using the service
+    const result = await liquidityOptimizerService.findOptimalRoute(
+        req.user.id,
+        sourceVaultId,
+        destVaultId,
+        parseFloat(amount)
+    );
+
+    return new ApiResponse(200, result, 'Optimal route calculated successfully').send(res);
 }));
 
 export default router;

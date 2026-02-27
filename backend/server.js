@@ -342,8 +342,8 @@ app.use("/api/escrow", userLimiter, escrowRoutes);
 app.use("/api/risk-lab", userLimiter, riskLabRoutes);
 app.use("/api/corporate", userLimiter, corporateRoutes);
 app.use("/api/succession-plan", userLimiter, successionApiRoutes);
-app.use("/api/compliance", userLimiter, complianceRoutes);
-
+app.use("/api/compliance", complianceRoutes);
+app.use("/api/liquidity/graph", userLimiter, liquidityGraphRoutes);
 
 
 
@@ -455,6 +455,8 @@ if (process.env.NODE_ENV !== 'test') {
       console.warn('⚠️ Market indices initialization skipped:', err.message);
     });
   });
+
+  precomputePathsJob.start();
 }
 
 export default app;

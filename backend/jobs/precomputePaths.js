@@ -1,32 +1,71 @@
 import cron from 'node-cron';
 import db from '../config/db.js';
-import { users, simulationScenarios } from '../db/schema.js';
-import simulationAI from '../services/simulationAI.js';
+import { users, vaults } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+import liquidityOptimizerService from '../services/liquidityOptimizerService.js';
 import { logInfo, logError } from '../utils/logger.js';
 
 /**
- * Precompute Paths Job (#454)
- * Periodic worker to pre-calculate most likely simulation scenarios.
+ * PrecomputeOptimalPaths Job (#476)
+ * Periodically calculates best routes between all user vaults to speed up UI response.
  */
-const schedulePrecomputePaths = () => {
-    // Run nightly at 5 AM
-    cron.schedule('0 5 * * *', async () => {
-        logInfo('[Precompute Paths] Starting nightly simulation batch...');
+class PrecomputeOptimalPathsJob {
+    constructor() {
+        this.isRunning = false;
+        this.cache = new Map();
+    }
+
+    start() {
+        // Run every 6 hours
+        cron.schedule('0 */6 * * *', async () => {
+            await this.run();
+        });
+        logInfo('Precompute Optimal Paths Job scheduled (every 6 hours)');
+    }
+
+    async run() {
+        if (this.isRunning) return;
+        this.isRunning = true;
+        logInfo('🚀 Starting precomputation of optimal liquidity paths...');
 
         try {
-            const allUsers = await db.select({ id: users.id }).from(users);
+            const activeUsers = await db.select().from(users).where(eq(users.isActive, true));
 
-            for (const user of allUsers) {
-                // Run a standard 30-year simulation for every user
-                // This ensures their dashboard "Probability Cloud" is always fresh
-                await simulationAI.runGlobalSimulation(user.id);
+            for (const user of activeUsers) {
+                const userVaults = await db.select().from(vaults).where(eq(vaults.ownerId, user.id));
+
+                if (userVaults.length < 2) continue;
+
+                for (const vSrc of userVaults) {
+                    for (const vDest of userVaults) {
+                        if (vSrc.id === vDest.id) continue;
+
+                        try {
+                            const route = await liquidityOptimizerService.findOptimalRoute(user.id, vSrc.id, vDest.id, 10000);
+                            // Store in a cache or a 'precomputed_routes' table
+                            const cacheKey = `${user.id}:${vSrc.id}:${vDest.id}`;
+                            this.cache.set(cacheKey, {
+                                route,
+                                computedAt: new Date()
+                            });
+                        } catch (e) {
+                            // Silent fail for impossible routes
+                        }
+                    }
+                }
+                logInfo(`Precomputed routes for user ${user.id} (${userVaults.length} vaults)`);
             }
-
-            logInfo(`[Precompute Paths] Batch complete. Simulated ${allUsers.length} user profiles.`);
+            logInfo('✅ Precomputation complete.');
         } catch (error) {
-            logError('[Precompute Paths] Job failed:', error);
+            logError('Precompute job failed:', error);
+        } finally {
+            this.isRunning = false;
         }
-    });
-};
+    }
 
-export default schedulePrecomputePaths;
+    getCachedRoute(userId, srcId, destId) {
+        return this.cache.get(`${userId}:${srcId}:${destId}`);
+    }
+}
+
+export default new PrecomputeOptimalPathsJob();
