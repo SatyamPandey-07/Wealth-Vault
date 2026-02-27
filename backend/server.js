@@ -131,6 +131,8 @@ import { initializeDefaultTaxCategories } from "./services/taxService.js";
 import marketData from "./services/marketData.js";
 import cascadeMonitorJob from "./jobs/cascadeMonitorJob.js";
 import topologyGarbageCollector from "./jobs/topologyGarbageCollector.js";
+import escrowValuationJob from "./jobs/escrowValuationJob.js";
+import hedgeDecayMonitor from "./jobs/hedgeDecayMonitor.js";
 
 // Event Listeners
 import { initializeBudgetListeners } from "./listeners/budgetListeners.js";
@@ -440,6 +442,8 @@ if (process.env.NODE_ENV !== 'test') {
     scheduleOracleSync();
     liquiditySweepJob.init();
     interlockAccrualSync.init();
+    escrowValuationJob.start();
+    hedgeDecayMonitor.start();
 
     // Add debt services to app.locals for middleware/route access
     app.locals.debtEngine = debtEngine;

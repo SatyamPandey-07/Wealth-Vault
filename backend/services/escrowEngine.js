@@ -1,187 +1,89 @@
-import { escrowContracts, escrowSignatures, oracleEvents, vaults, vaultLocks, users } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
-import vaultService from './vaultService.js';
-import cryptoUtils from '../utils/cryptoUtils.js';
-import escrowRiskService from './escrowRiskService.js';
-import { logInfo, logError } from '../utils/logger.js';
 import db from '../config/db.js';
+import { escrowContracts, trancheReleases, escrowAuditLogs } from '../db/schema.js';
+import { eq, and } from 'drizzle-orm';
+import { logInfo, logError } from '../utils/logger.js';
+import trancheController from './trancheController.js';
+import EscrowAuditLogUtility from '../utils/escrowAuditLog.js';
 
+/**
+ * EscrowEngine (#481)
+ * Manages the state machine of high-value fund locks and multi-sig releases.
+ */
 class EscrowEngine {
     /**
-     * Draft a new escrow contract
+     * Initializes a new escrow lock
      */
-    async draftContract(userId, data) {
-        const { payerId, payeeId, vaultId, amount, currency, escrowType, releaseConditions, metadata } = data;
-
-        // Perform real-time risk assessment (L3)
-        const riskScore = await escrowRiskService.calculateRiskScore({ amount, escrowType, releaseConditions, payeeId });
-        const riskAnalysis = await escrowRiskService.analyzeMetadata(metadata || {});
-
-        const updatedMetadata = {
-            ...(metadata || {}),
-            riskScore,
-            riskLevel: riskAnalysis.riskLevel,
-            riskInsights: riskAnalysis.insights,
-            assessedAt: new Date()
-        };
+    async createEscrow(userId, config) {
+        const { title, totalAmount, baseCurrency, escrowCurrency, multiSigConfig, tranches, vaultId } = config;
 
         const [contract] = await db.insert(escrowContracts).values({
             userId,
-            creatorId: userId,
-            payerId,
-            payeeId,
+            title,
+            totalAmount: totalAmount.toString(),
+            lockedAmount: totalAmount.toString(),
+            baseCurrency,
+            escrowCurrency,
+            multiSigConfig,
             vaultId,
-            amount: amount.toString(),
-            currency: currency || 'USD',
-            escrowType,
-            releaseConditions,
-            status: 'draft',
-            metadata: updatedMetadata
+            status: 'active'
         }).returning();
 
-        logInfo(`[Escrow Engine] Drafted contract ${contract.id} with risk score ${riskScore}`);
+        // Initialize high-priority tranches
+        if (tranches && tranches.length > 0) {
+            await db.insert(trancheReleases).values(
+                tranches.map((t, idx) => ({
+                    contractId: contract.id,
+                    milestoneName: t.name,
+                    amount: t.amount.toString()
+                }))
+            );
+        }
+
+        await EscrowAuditLogUtility.log(contract.id, 'ESCROW_INITIALIZED', 'system', { totalAmount, currency: escrowCurrency });
         return contract;
     }
 
     /**
-     * Activate contract and lock funds
+     * Casts a signature on a specific tranche release
      */
-    async activateContract(contractId, userId) {
-        return await db.transaction(async (tx) => {
-            const contract = await tx.query.escrowContracts.findFirst({
-                where: eq(escrowContracts.id, contractId)
-            });
+    async castTrancheSignature(contractId, trancheId, actorId) {
+        const [tranche] = await db.select().from(trancheReleases).where(eq(trancheReleases.id, trancheId));
+        const [contract] = await db.select().from(escrowContracts).where(eq(escrowContracts.id, contractId));
 
-            if (!contract) throw new Error('Contract not found');
-            if (contract.status !== 'draft') throw new Error('Contract already active or processed');
-            if (contract.payerId !== userId) throw new Error('Only the payer can activate the contract');
+        if (!tranche || !contract) throw new Error('Escrow or Tranche not found');
+        if (tranche.isReleased) throw new Error('Tranche already released');
 
-            // Lock funds in vault
-            await vaultService.lockBalance(
-                userId,
-                contract.vaultId,
-                contract.amount,
-                'escrow',
-                'escrow_contract',
-                contract.id
-            );
+        const signatures = tranche.signaturesCollected || [];
+        if (signatures.includes(actorId)) throw new Error('Already signed');
 
-            const [updatedContract] = await tx.update(escrowContracts)
-                .set({ status: 'active', updatedAt: new Date() })
-                .where(eq(escrowContracts.id, contractId))
-                .returning();
+        signatures.push(actorId);
 
-            logInfo(`[Escrow Engine] Activated contract ${contractId}, funds locked.`);
-            return updatedContract;
-        });
-    }
+        // Check against multi-sig threshold
+        const required = contract.multiSigConfig.threshold || 1;
+        let isFullySigned = signatures.length >= required;
 
-    /**
-     * Release funds to payee
-     */
-    async releaseFunds(contractId, triggerSource = 'manual') {
-        return await db.transaction(async (tx) => {
-            const contract = await tx.query.escrowContracts.findFirst({
-                where: eq(escrowContracts.id, contractId)
-            });
+        const updateData = { signaturesCollected: signatures };
 
-            if (!contract || contract.status !== 'active') {
-                throw new Error('Contract not in active state');
-            }
-
-            // Verify conditions (Simplified)
-            // In a real system, we'd check oracleEvents or signatures here
-
-            // Find the lock
-            const lock = await tx.query.vaultLocks.findFirst({
-                where: and(
-                    eq(vaultLocks.referenceId, contractId),
-                    eq(vaultLocks.status, 'active')
-                )
-            });
-
-            if (lock) {
-                await vaultService.releaseLock(lock.id, contract.userId);
-            }
-            const [updatedContract] = await tx.update(escrowContracts)
-                .set({ status: 'released', updatedAt: new Date() })
-                .where(eq(escrowContracts.id, contractId))
-                .returning();
-
-            logInfo(`[Escrow Engine] Released funds for contract ${contractId}`);
-            return updatedContract;
-        });
-    }
-
-    /**
-     * Refund funds to payer
-     */
-    async refundPayer(contractId) {
-        // Similar to release but returns to payer
-    }
-
-    /**
-     * Propose a signature for release
-     */
-    async submitSignature(contractId, userId, signatureData) {
-        const { signature, publicKey, signedData } = signatureData;
-
-        // Verify signature
-        const isValid = cryptoUtils.verifySignature(signedData, signature, publicKey);
-        if (!isValid) throw new Error('Invalid cryptographic signature');
-
-        const [sig] = await db.insert(escrowSignatures).values({
-            escrowId: contractId,
-            signerId: userId,
-            signature,
-            publicKey,
-            signedData
-        }).returning();
-
-        // Check if threshold reached
-        await this.evaluateReleaseConditions(contractId);
-
-        return sig;
-    }
-
-    /**
-     * Evaluate if release conditions are met
-     */
-    async evaluateReleaseConditions(contractId) {
-        const contract = await db.query.escrowContracts.findFirst({
-            where: eq(escrowContracts.id, contractId),
-            with: {
-                signatures: true
-            }
-        });
-
-        if (!contract || contract.status !== 'active') return;
-
-        const { releaseConditions } = contract;
-
-        // 1. Check Multi-Sig condition
-        if (releaseConditions.type === 'multi_sig') {
-            const validSigs = contract.signatures.length;
-            if (validSigs >= releaseConditions.requiredSignatures) {
-                await this.releaseFunds(contractId, 'multi_sig_threshold');
+        if (isFullySigned) {
+            // New sequencing check
+            const eligibility = await trancheController.evaluateTrancheEligibility(contractId, trancheId);
+            if (eligibility.eligible) {
+                updateData.isReleased = true;
+                updateData.releasedAt = new Date();
+            } else {
+                // Keep signed but blocked
+                isFullySigned = false;
+                await EscrowAuditLogUtility.log(contractId, 'SIGNATURE_THRESHOLD_MET_BLOCK_SEQUENCE', actorId, { trancheId, blockedBy: eligibility.blockedBy });
             }
         }
 
-        // 2. Check Oracle condition
-        if (releaseConditions.type === 'oracle_event') {
-            const event = await db.query.oracleEvents.findFirst({
-                where: and(
-                    eq(oracleEvents.eventType, releaseConditions.eventType),
-                    eq(oracleEvents.externalId, releaseConditions.externalId),
-                    eq(oracleEvents.status, 'verified')
-                )
-            });
+        await db.update(trancheReleases).set(updateData).where(eq(trancheReleases.id, trancheId));
+        await EscrowAuditLogUtility.log(contractId, 'SIGNATURE_CAST', actorId, { trancheId, thresholdReached: isFullySigned });
 
-            if (event) {
-                await this.releaseFunds(contractId, 'oracle_verified');
-            }
-        }
+        return { isFullySigned, currentSigs: signatures.length };
     }
+
+    // Removed logAction in favor of EscrowAuditLogUtility
 }
 
 export default new EscrowEngine();

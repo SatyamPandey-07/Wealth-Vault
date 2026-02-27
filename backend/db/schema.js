@@ -4566,3 +4566,53 @@ export const stressTestSimulations = pgTable('stress_test_simulations', {
     isSystemTriggered: boolean('is_system_triggered').default(false),
     createdAt: timestamp('created_at').defaultNow(),
 });
+
+// ============================================================================
+// SMART ESCROW & STOCHASTIC HEDGING SYSTEM (#481)
+// ============================================================================
+
+export const escrowContracts = pgTable('escrow_contracts', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    title: text('title').notNull(),
+    description: text('description'),
+    baseCurrency: text('base_currency').notNull(), // User's home currency (e.g., USD)
+    escrowCurrency: text('escrow_currency').notNull(), // Lock currency (e.g., EUR)
+    totalAmount: numeric('total_amount', { precision: 20, scale: 2 }).notNull(),
+    lockedAmount: numeric('locked_amount', { precision: 20, scale: 2 }).notNull(),
+    status: text('status').default('active'), // active, completed, defaulted, liquidated
+    vaultId: uuid('vault_id').references(() => vaults.id), // Where funds are backed
+    multiSigConfig: jsonb('multi_sig_config').notNull(), // Keys/Signers required
+    expiryDate: timestamp('expiry_date'),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const trancheReleases = pgTable('tranche_releases', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    contractId: uuid('contract_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+    milestoneName: text('milestone_name').notNull(),
+    amount: numeric('amount', { precision: 20, scale: 2 }).notNull(),
+    isReleased: boolean('is_released').default(false),
+    signaturesCollected: jsonb('signatures_collected').default([]),
+    releasedAt: timestamp('released_at'),
+});
+
+export const activeHedges = pgTable('active_hedges', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    contractId: uuid('contract_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+    hedgeType: text('hedge_type').notNull(), // FORWARD, SYNTH_STABLE, SWAP
+    notionalAmount: numeric('notional_amount', { precision: 20, scale: 2 }).notNull(),
+    entryRate: numeric('entry_rate', { precision: 12, scale: 6 }).notNull(),
+    currentValue: numeric('current_value', { precision: 20, scale: 2 }),
+    marginBuffer: numeric('margin_buffer', { precision: 20, scale: 2 }),
+    lastRevaluationAt: timestamp('last_revaluation_at').defaultNow(),
+});
+
+export const escrowAuditLogs = pgTable('escrow_audit_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    contractId: uuid('contract_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+    action: text('action').notNull(), // SIGNATURE_CAST, TRANCHE_RELEASE, HEDGE_ADJUST, MARGIN_CALL
+    actor: text('actor').notNull(),
+    details: jsonb('details'),
+    timestamp: timestamp('timestamp').defaultNow(),
+});
