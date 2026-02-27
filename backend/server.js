@@ -61,6 +61,7 @@ import retirementPlanningRoutes from "./routes/retirementPlanning.js";
 import netWorthRoutes from "./routes/netWorth.js";
 import subscriptionTrackerRoutes from "./routes/subscriptionTracker.js";
 import achievementsRoutes from "./routes/achievements.js";
+import familyRoutes from "./routes/family.js";
 import { scheduleMonthlyReports } from "./jobs/reportGenerator.js";
 
 // Load environment variables
@@ -234,6 +235,9 @@ app.use("/api/subscription-tracker", userLimiter, subscriptionTrackerRoutes);
 
 // Gamification routes
 app.use("/api/achievements", userLimiter, achievementsRoutes);
+
+// Family Financial Planning routes
+app.use("/api/family", userLimiter, familyRoutes);
 
 // Secure file server for uploaded files
 app.use("/uploads", createFileServerRoute());

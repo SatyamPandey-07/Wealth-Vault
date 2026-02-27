@@ -994,9 +994,362 @@ export const vaultsRelations = relations(vaults, ({ one, many }) => ({
     expenseApprovals: many(expenseApprovals),
 }));
 
+// ============================================
+// FAMILY FINANCIAL PLANNING TABLES
+// ============================================
+
+// Children Table (for child profiles in family vaults)
+export const children = pgTable('children', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(), // Parent user
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }), // Optional vault association
+    name: text('name').notNull(),
+    dateOfBirth: timestamp('date_of_birth'),
+    age: integer('age'), // Calculated or manually set
+    relationship: text('relationship').default('child'), // child, dependent, other
+    avatar: text('avatar'), // URL to avatar image
+    color: text('color').default('#3B82F6'), // Color coding for the child
+    isActive: boolean('is_active').default(true),
+    // Allowance settings
+    allowanceEnabled: boolean('allowance_enabled').default(false),
+    defaultAllowanceAmount: numeric('default_allowance_amount', { precision: 12, scale: 2 }).default('0'),
+    allowanceFrequency: text('allowance_frequency').default('weekly'), // daily, weekly, bi_weekly, monthly
+    allowanceDay: integer('allowance_day').default(1), // Day of week (1-7) or month (1-31)
+    // Learning settings
+    spendingLimitEnabled: boolean('spending_limit_enabled').default(true),
+    requireApproval: boolean('require_approval').default(true),
+    approvalThreshold: numeric('approval_threshold', { precision: 12, scale: 2 }).default('25.00'),
+    // Gamification
+    gamificationEnabled: boolean('gamification_enabled').default(true),
+    currentBalance: numeric('current_balance', { precision: 12, scale: 2 }).default('0'),
+    lifetimeEarnings: numeric('lifetime_earnings', { precision: 12, scale: 2 }).default('0'),
+    lifetimeSpent: numeric('lifetime_spent', { precision: 12, scale: 2 }).default('0'),
+    metadata: jsonb('metadata').default({
+        interests: [],
+        learningLevel: 'beginner',
+        achievements: []
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Allowances Table (for recurring allowance payments)
+export const allowances = pgTable('allowances', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(), // Parent who set it up
+    childId: uuid('child_id').references(() => children.id, { onDelete: 'cascade' }).notNull(),
+    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    currency: text('currency').default('USD'),
+    frequency: text('frequency').notNull(), // daily, weekly, bi_weekly, monthly
+    dayOfWeek: integer('day_of_week'), // 1-7 for weekly (Monday=1)
+    dayOfMonth: integer('day_of_month'), // 1-31 for monthly
+    startDate: timestamp('start_date').defaultNow(),
+    endDate: timestamp('end_date'), // Optional end date
+    isActive: boolean('is_active').default(true),
+    isPaused: boolean('is_paused').default(false),
+    // Automation
+    autoTransfer: boolean('auto_transfer').default(false), // Auto-transfer to child's balance
+    sourceAccountId: uuid('source_account_id'), // Bank account or parent wallet
+    // Earning conditions
+    requireChores: boolean('require_chores').default(false),
+    requiredChoresCount: integer('required_chores_count').default(0),
+    // Notifications
+    reminderDaysBefore: integer('reminder_days_before').default(1),
+    lastPaymentDate: timestamp('last_payment_date'),
+    nextPaymentDate: timestamp('next_payment_date'),
+    totalPaid: numeric('total_paid', { precision: 12, scale: 2 }).default('0'),
+    paymentCount: integer('payment_count').default(0),
+    notes: text('notes'),
+    metadata: jsonb('metadata').default({
+        paymentHistory: [],
+        adjustments: []
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Child Spending Limits Table (category-specific limits per child)
+export const childSpendingLimits = pgTable('child_spending_limits', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    childId: uuid('child_id').references(() => children.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }),
+    // Limit settings
+    limitType: text('limit_type').default('amount'), // amount, percentage, transactions
+    limitAmount: numeric('limit_amount', { precision: 12, scale: 2 }),
+    limitPercentage: doublePrecision('limit_percentage'), // Percentage of total allowance
+    transactionCount: integer('transaction_count'), // Max number of transactions
+    period: text('period').default('weekly'), // daily, weekly, monthly
+    // Enforcement
+    enforcementType: text('enforcement_type').default('warn'), // warn, block, require_approval
+    isActive: boolean('is_active').default(true),
+    // Current usage
+    currentSpent: numeric('current_spent', { precision: 12, scale: 2 }).default('0'),
+    currentTransactions: integer('current_transactions').default(0),
+    periodStart: timestamp('period_start').defaultNow(),
+    periodEnd: timestamp('period_end'),
+    // Notifications
+    alertAtPercentage: integer('alert_at_percentage').default(80),
+    lastAlertSent: timestamp('last_alert_sent'),
+    metadata: jsonb('metadata').default({
+        usageHistory: [],
+        overrideHistory: []
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Child Transactions Table (allowance payments and child expenses)
+export const childTransactions = pgTable('child_transactions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(), // Parent
+    childId: uuid('child_id').references(() => children.id, { onDelete: 'cascade' }).notNull(),
+    // Transaction details
+    type: text('type').notNull(), // allowance, expense, earning, bonus, saving_deposit, saving_withdrawal
+    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    currency: text('currency').default('USD'),
+    description: text('description').notNull(),
+    // For expenses
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null' }),
+    merchant: text('merchant'),
+    // For allowance payments
+    allowanceId: uuid('allowance_id').references(() => allowances.id, { onDelete: 'set null' }),
+    // Status
+    status: text('status').default('completed'), // pending, completed, cancelled, declined
+    // Approval workflow
+    requiresApproval: boolean('requires_approval').default(false),
+    approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'set null' }),
+    approvedAt: timestamp('approved_at'),
+    approvalNotes: text('approval_notes'),
+    // Related expense (if linked to family expense)
+    expenseId: uuid('expense_id').references(() => expenses.id, { onDelete: 'set null' }),
+    // Running balance
+    balanceAfter: numeric('balance_after', { precision: 12, scale: 2 }).notNull(),
+    // Metadata
+    receipt: jsonb('receipt'),
+    location: jsonb('location'),
+    tags: jsonb('tags').default([]),
+    notes: text('notes'),
+    metadata: jsonb('metadata').default({
+        source: 'manual', // manual, automatic, import
+        device: null,
+        ipAddress: null
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Child Tasks/Chores Table (for earning allowances)
+export const childTasks = pgTable('child_tasks', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    childId: uuid('child_id').references(() => children.id, { onDelete: 'cascade' }).notNull(),
+    title: text('title').notNull(),
+    description: text('description'),
+    // Task settings
+    frequency: text('frequency').default('weekly'), // one_time, daily, weekly, monthly
+    rewardAmount: numeric('reward_amount', { precision: 12, scale: 2 }).default('0'),
+    isRequired: boolean('is_required').default(false), // Required for allowance
+    // Scheduling
+    dueDate: timestamp('due_date'),
+    scheduledDate: timestamp('scheduled_date'),
+    // Status
+    status: text('status').default('pending'), // pending, in_progress, completed, verified, cancelled
+    completedAt: timestamp('completed_at'),
+    completedBy: uuid('completed_by').references(() => users.id, { onDelete: 'set null' }),
+    verifiedAt: timestamp('verified_at'),
+    verifiedBy: uuid('verified_by').references(() => users.id, { onDelete: 'set null' }),
+    // Recurrence
+    isRecurring: boolean('is_recurring').default(false),
+    recurringPattern: jsonb('recurring_pattern'),
+    nextOccurrence: timestamp('next_occurrence'),
+    // Metadata
+    category: text('category').default('chore'), // chore, homework, behavior, other
+    difficulty: text('difficulty').default('medium'), // easy, medium, hard
+    estimatedMinutes: integer('estimated_minutes'),
+    tags: jsonb('tags').default([]),
+    notes: text('notes'),
+    metadata: jsonb('metadata').default({
+        completionHistory: [],
+        streakCount: 0
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Child Savings Goals Table (teaching goal-based saving)
+export const childSavingsGoals = pgTable('child_savings_goals', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    childId: uuid('child_id').references(() => children.id, { onDelete: 'cascade' }).notNull(),
+    title: text('title').notNull(),
+    description: text('description'),
+    targetAmount: numeric('target_amount', { precision: 12, scale: 2 }).notNull(),
+    currentAmount: numeric('current_amount', { precision: 12, scale: 2 }).default('0'),
+    currency: text('currency').default('USD'),
+    // Goal settings
+    category: text('category').default('toy'), // toy, game, education, charity, other
+    priority: text('priority').default('medium'), // low, medium, high
+    deadline: timestamp('deadline'),
+    // Visual elements
+    imageUrl: text('image_url'),
+    color: text('color').default('#10B981'),
+    // Status
+    status: text('status').default('active'), // active, completed, cancelled, paused
+    completedAt: timestamp('completed_at'),
+    // Parental controls
+    parentContribution: numeric('parent_contribution', { precision: 12, scale: 2 }).default('0'),
+    matchPercentage: doublePrecision('match_percentage').default(0), // Parent matching (e.g., 50% match)
+    // Gamification
+    milestoneRewards: jsonb('milestone_rewards').default([]), // Small rewards at milestones
+    isCelebrated: boolean('is_celebrated').default(false),
+    // Metadata
+    tags: jsonb('tags').default([]),
+    notes: text('notes'),
+    metadata: jsonb('metadata').default({
+        contributionHistory: [],
+        milestoneHistory: []
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// ============================================
+// FAMILY RELATIONS
+// ============================================
+
+// Children Relations
+export const childrenRelations = relations(children, ({ one, many }) => ({
+    parent: one(users, {
+        fields: [children.userId],
+        references: [users.id],
+    }),
+    vault: one(vaults, {
+        fields: [children.vaultId],
+        references: [vaults.id],
+    }),
+    allowances: many(allowances),
+    spendingLimits: many(childSpendingLimits),
+    transactions: many(childTransactions),
+    tasks: many(childTasks),
+    savingsGoals: many(childSavingsGoals),
+}));
+
+// Allowances Relations
+export const allowancesRelations = relations(allowances, ({ one, many }) => ({
+    parent: one(users, {
+        fields: [allowances.userId],
+        references: [users.id],
+    }),
+    child: one(children, {
+        fields: [allowances.childId],
+        references: [children.id],
+    }),
+    transactions: many(childTransactions),
+}));
+
+// Child Spending Limits Relations
+export const childSpendingLimitsRelations = relations(childSpendingLimits, ({ one }) => ({
+    parent: one(users, {
+        fields: [childSpendingLimits.userId],
+        references: [users.id],
+    }),
+    child: one(children, {
+        fields: [childSpendingLimits.childId],
+        references: [children.id],
+    }),
+    category: one(categories, {
+        fields: [childSpendingLimits.categoryId],
+        references: [categories.id],
+    }),
+}));
+
+// Child Transactions Relations
+export const childTransactionsRelations = relations(childTransactions, ({ one }) => ({
+    parent: one(users, {
+        fields: [childTransactions.userId],
+        references: [users.id],
+    }),
+    child: one(children, {
+        fields: [childTransactions.childId],
+        references: [children.id],
+    }),
+    category: one(categories, {
+        fields: [childTransactions.categoryId],
+        references: [categories.id],
+    }),
+    allowance: one(allowances, {
+        fields: [childTransactions.allowanceId],
+        references: [allowances.id],
+    }),
+    expense: one(expenses, {
+        fields: [childTransactions.expenseId],
+        references: [expenses.id],
+    }),
+    approver: one(users, {
+        fields: [childTransactions.approvedBy],
+        references: [users.id],
+        relationName: 'transaction_approver'
+    }),
+}));
+
+// Child Tasks Relations
+export const childTasksRelations = relations(childTasks, ({ one }) => ({
+    parent: one(users, {
+        fields: [childTasks.userId],
+        references: [users.id],
+    }),
+    child: one(children, {
+        fields: [childTasks.childId],
+        references: [children.id],
+    }),
+    completedByUser: one(users, {
+        fields: [childTasks.completedBy],
+        references: [users.id],
+        relationName: 'task_completed_by'
+    }),
+    verifiedByUser: one(users, {
+        fields: [childTasks.verifiedBy],
+        references: [users.id],
+        relationName: 'task_verified_by'
+    }),
+}));
+
+// Child Savings Goals Relations
+export const childSavingsGoalsRelations = relations(childSavingsGoals, ({ one }) => ({
+    parent: one(users, {
+        fields: [childSavingsGoals.userId],
+        references: [users.id],
+    }),
+    child: one(children, {
+        fields: [childSavingsGoals.childId],
+        references: [children.id],
+    }),
+}));
+
+// Update vaults relations to include children
+export const vaultsRelations = relations(vaults, ({ one, many }) => ({
+    owner: one(users, {
+        fields: [vaults.ownerId],
+        references: [users.id],
+    }),
+    members: many(vaultMembers),
+    expenses: many(expenses),
+    goals: many(goals),
+    invites: many(vaultInvites),
+    reports: many(reports),
+    expenseShares: many(expenseShares),
+    reimbursements: many(reimbursements),
+    familySettings: one(familySettings),
+    sharedBudgets: many(sharedBudgets),
+    expenseApprovals: many(expenseApprovals),
+    children: many(children),
+}));
+
 // Bank Accounts Table (for Plaid integration)
 
 export const bankAccounts = pgTable('bank_accounts', {
+
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     plaidAccountId: text('plaid_account_id').notNull(),
@@ -1045,64 +1398,14 @@ export const bankTransactions = pgTable('bank_transactions', {
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-// Update users relations to include portfolios, subscriptions, bills, debts, and family relations
-export const usersRelations = relations(users, ({ many }) => ({
-    categories: many(categories),
-    expenses: many(expenses),
-    goals: many(goals),
-    deviceSessions: many(deviceSessions),
-    vaultMemberships: many(vaultMembers),
-    ownedVaults: many(vaults),
-    securityEvents: many(securityEvents),
-    reports: many(reports),
-    budgetAlerts: many(budgetAlerts),
-    portfolios: many(portfolios),
-    subscriptions: many(subscriptions),
-    bills: many(bills),
-    debts: many(debts),
-    debtPayments: many(debtPayments),
-    expenseShares: many(expenseShares),
-    sentReimbursements: many(reimbursements, { relationName: 'reimbursements_from' }),
-    receivedReimbursements: many(reimbursements, { relationName: 'reimbursements_to' }),
-    bankAccounts: many(bankAccounts),
-    bankTransactions: many(bankTransactions),
-    emergencyFundGoals: many(emergencyFundGoals),
-    creditScores: many(creditScores),
-    creditScoreAlerts: many(creditScoreAlerts),
-    billNegotiations: many(billNegotiation),
-    negotiationAttempts: many(negotiationAttempts),
-}));
 
 
 
 
 
-// Bank Accounts Relations
-export const bankAccountsRelations = relations(bankAccounts, ({ one, many }) => ({
-    user: one(users, {
-        fields: [bankAccounts.userId],
-        references: [users.id],
-    }),
-    transactions: many(bankTransactions),
-}));
-
-// Bank Transactions Relations
-export const bankTransactionsRelations = relations(bankTransactions, ({ one }) => ({
-    user: one(users, {
-        fields: [bankTransactions.userId],
-        references: [users.id],
-    }),
-    bankAccount: one(bankAccounts, {
-        fields: [bankTransactions.bankAccountId],
-        references: [bankAccounts.id],
-    }),
-    expense: one(expenses, {
-        fields: [bankTransactions.expenseId],
-        references: [expenses.id],
-    }),
-}));
 
 // Savings Roundups Relations
+
 export const savingsRoundupsRelations = relations(savingsRoundups, ({ one }) => ({
     user: one(users, {
         fields: [savingsRoundups.userId],
@@ -2027,4 +2330,8 @@ export const usersRelations = relations(users, ({ many }) => ({
     negotiationAttempts: many(negotiationAttempts),
     investmentRiskProfiles: many(investmentRiskProfiles),
     investmentRecommendations: many(investmentRecommendations),
+    children: many(children),
+    allowances: many(allowances),
+    childSpendingLimits: many(childSpendingLimits),
+    childTransactions: many(childTransactions),
 }));
