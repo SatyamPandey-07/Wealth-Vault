@@ -131,6 +131,8 @@ import { initializeDefaultTaxCategories } from "./services/taxService.js";
 import marketData from "./services/marketData.js";
 import cascadeMonitorJob from "./jobs/cascadeMonitorJob.js";
 import topologyGarbageCollector from "./jobs/topologyGarbageCollector.js";
+import escrowValuationJob from "./jobs/escrowValuationJob.js";
+import hedgeDecayMonitor from "./jobs/hedgeDecayMonitor.js";
 
 // Event Listeners
 import { initializeBudgetListeners } from "./listeners/budgetListeners.js";
@@ -138,6 +140,13 @@ import { initializeNotificationListeners } from "./listeners/notificationListene
 import { initializeAnalyticsListeners } from "./listeners/analyticsListeners.js";
 import { initializeSubscriptionListeners } from "./listeners/subscriptionListeners.js";
 import { initializeSavingsListeners } from "./listeners/savingsListeners.js";
+import thresholdMonitor from "./services/thresholdMonitor.js";
+import liquidityRechargeJob from "./jobs/liquidityRechargeJob.js";
+import auditTrailSealer from "./jobs/auditTrailSealer.js";
+import taxOptimizationRoutes from "./routes/taxOptimization.js";
+import taxHarvestScanner from "./jobs/taxHarvestScanner.js";
+import washSaleExpirationJob from "./jobs/washSaleExpirationJob.js";
+import { initializeLiquidityListeners } from "./listeners/liquidityListeners.js";
 import workflowEngine from "./services/workflowEngine.js"; // Bootstrap event hooks
 
 // Load environment variables
@@ -176,6 +185,7 @@ initializeAnalyticsListeners();
 initializeSubscriptionListeners();
 initializeSavingsListeners();
 initializeAutopilotListeners();
+initializeLiquidityListeners();
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -320,6 +330,7 @@ app.use("/api/subscriptions", userLimiter, subscriptionRoutes);
 app.use("/api/assets", userLimiter, assetRoutes);
 app.use("/api/governance", userLimiter, governanceRoutes);
 app.use("/api/tax", userLimiter, taxRoutes);
+app.use("/api/tax/optimization", userLimiter, taxOptimizationRoutes);
 app.use("/api/simulations", userLimiter, simulationRoutes);
 app.use("/api/business", userLimiter, businessRoutes);
 app.use("/api/payroll", userLimiter, payrollRoutes);
@@ -443,6 +454,13 @@ if (process.env.NODE_ENV !== 'test') {
     scheduleOracleSync();
     liquiditySweepJob.init();
     interlockAccrualSync.init();
+    thresholdMonitor.start();
+    escrowValuationJob.start();
+    hedgeDecayMonitor.start();
+    liquidityRechargeJob.start();
+    auditTrailSealer.start();
+    taxHarvestScanner.start();
+    washSaleExpirationJob.start();
 
     // Add debt services to app.locals for middleware/route access
     app.locals.debtEngine = debtEngine;
