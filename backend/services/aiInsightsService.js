@@ -2,6 +2,9 @@ import expenseService from './expenseService.js';
 import investmentService from './investmentService.js';
 import savingsService from './savingsService.js';
 import { getGeminiResponse } from './geminiservice.js';
+import { eq, and, gte, desc } from 'drizzle-orm';
+import db from '../config/db.js';
+import { expenses } from '../db/schema.js';
 
 /**
  * AI Insights Service
@@ -67,9 +70,24 @@ const aggregateUserData = async (userId) => {
     const threeMonthsAgo = new Date();
     threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
-    // Note: expenseService doesn't have a direct method for filtering by date, so we'll assume we need to add one or use existing
-    // For now, mock or use getExpenses with filters if available
-    const expenses = []; // TODO: Implement proper expense fetching
+    // Fetch real expenses from database with date filter
+    const userExpenses = await db
+      .select({
+        id: expenses.id,
+        amount: expenses.amount,
+        currency: expenses.currency,
+        description: expenses.description,
+        date: expenses.date,
+        categoryId: expenses.categoryId,
+        paymentMethod: expenses.paymentMethod,
+      })
+      .from(expenses)
+      .where(and(
+        eq(expenses.userId, userId),
+        gte(expenses.date, threeMonthsAgo)
+      ))
+      .orderBy(desc(expenses.date))
+      .limit(100);
 
     // Get investments
     const investments = await investmentService.getInvestments(userId);
@@ -78,7 +96,7 @@ const aggregateUserData = async (userId) => {
     const savingsGoals = await savingsService.getUserSavingsGoals(userId);
 
     return {
-      expenses,
+      expenses: userExpenses,
       investments,
       savings: savingsGoals,
     };
