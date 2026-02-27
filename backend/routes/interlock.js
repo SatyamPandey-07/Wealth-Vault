@@ -1,87 +1,81 @@
 import express from 'express';
 import { protect } from '../middleware/auth.js';
-import interlockService from '../services/interlockService.js';
-import { enforceInterlockSafety } from '../middleware/interlockGuard.js';
+import cascadeStressTester from '../services/cascadeStressTester.js';
+import asyncHandler from 'express-async-handler';
 import { ApiResponse } from '../utils/ApiResponse.js';
+import db from '../config/db.js';
+import { stressTestSimulations, topologySnapshots } from '../db/schema.js';
+import { eq, desc } from 'drizzle-orm';
+import { body } from 'express-validator';
+import { validateRequest } from '../middleware/validation.js';
 
 const router = express.Router();
 
-// Get network analysis for all vaults
-router.get('/analysis', protect, async (req, res) => {
-    try {
-        const analysis = await interlockService.getNetworkAnalysis(req.user.id);
-        res.status(200).json(new ApiResponse(200, analysis, 'Network analysis retrieved successfully'));
-    } catch (error) {
-        res.status(500).json(new ApiResponse(500, null, error.message));
-    }
-});
+/**
+ * @desc Generate and retrieve D3-compatible node-link representation of network
+ * @route GET /api/interlock/topology
+ */
+router.get('/topology', protect, asyncHandler(async (req, res) => {
+    // Freshly generate the topology with all stress test metrics included
+    const snapshot = await cascadeStressTester.generateTopology(req.user.id);
+    new ApiResponse(200, snapshot, 'Interlocking network topology generated').send(res);
+}));
 
-// Get opportunity cost analysis
-router.get('/opportunity-cost', protect, async (req, res) => {
-    try {
-        const analysis = await interlockService.getOpportunityCostAnalysis(req.user.id);
-        res.status(200).json(new ApiResponse(200, analysis, 'Opportunity cost analysis retrieved successfully'));
-    } catch (error) {
-        res.status(500).json(new ApiResponse(500, null, error.message));
-    }
-});
-
-// Initiate an internal loan
-router.post('/loans', protect, enforceInterlockSafety(100), async (req, res) => {
-    const {
-        lenderVaultId, borrowerVaultId, amount, interestRate,
-        rateType = 'fixed', indexSource, interestSpread = 0
-    } = req.body;
-
-    try {
-        const loan = await interlockService.initiateInternalLoan(
-            req.user.id,
-            lenderVaultId,
-            borrowerVaultId,
-            parseFloat(amount),
-            parseFloat(interestRate),
-            rateType,
-            indexSource,
-            parseFloat(interestSpread)
-        );
-        res.status(201).json(new ApiResponse(201, loan, 'Internal loan initiated successfully'));
-    } catch (error) {
-        res.status(400).json(new ApiResponse(400, null, error.message));
-    }
-});
-
-// Repay an internal loan
-router.post('/loans/:loanId/repay', protect, async (req, res) => {
-    const { amount } = req.body;
-    const { loanId } = req.params;
-
-    try {
-        const repayment = await interlockService.recordRepayment(req.user.id, loanId, parseFloat(amount));
-        res.status(200).json(new ApiResponse(200, repayment, 'Repayment recorded successfully'));
-    } catch (error) {
-        res.status(400).json(new ApiResponse(400, null, error.message));
-    }
-});
-
-// Get D3-compatible network topology (#465)
-router.get('/topology', protect, async (req, res) => {
-    try {
-        const topology = await interlockService.getTopology(req.user.id);
-        res.status(200).json(new ApiResponse(200, topology, 'Network topology retrieved successfully'));
-    } catch (error) {
-        res.status(500).json(new ApiResponse(500, null, error.message));
-    }
-});
-
-// Run a predictive cascade stress test (#465)
-router.post('/stress-test', protect, async (req, res) => {
+/**
+ * @desc Run what-if cascade stress test simulation (#465)
+ * @route POST /api/interlock/simulate-shock
+ */
+router.post('/simulate-shock', protect, [
+    body('targetVaultId').isUUID().withMessage('targetVaultId must be a valid UUID'),
+    body('shockPercentage').isFloat({ min: 0.1, max: 100 }).withMessage('shockPercentage must be between 0.1 and 100'),
+    validateRequest
+], asyncHandler(async (req, res) => {
     const { targetVaultId, shockPercentage } = req.body;
-    try {
-        const results = await interlockService.runStressTest(req.user.id, targetVaultId, parseFloat(shockPercentage));
-        res.status(200).json(new ApiResponse(200, results, 'Stress test completed successfully'));
-    } catch (error) {
-        res.status(500).json(new ApiResponse(500, null, error.message));
-    }
-});
+
+    const simulation = await cascadeStressTester.simulateShock(
+        req.user.id,
+        targetVaultId,
+        parseFloat(shockPercentage),
+        false // User-triggered
+    );
+
+    new ApiResponse(201, simulation, `Stress test completed: ${simulation.insolventVaultsCount} vaults rendered insolvent`).send(res);
+}));
+
+/**
+ * @desc Get historical stress tests for analysis
+ * @route GET /api/interlock/stress-tests
+ */
+router.get('/stress-tests', protect, asyncHandler(async (req, res) => {
+    const simulations = await db.select()
+        .from(stressTestSimulations)
+        .where(eq(stressTestSimulations.userId, req.user.id))
+        .orderBy(desc(stressTestSimulations.createdAt))
+        .limit(20);
+
+    new ApiResponse(200, simulations, 'Historical stress tests retrieved').send(res);
+}));
+
+import insolvencyMitigator from '../services/insolvencyMitigator.js';
+
+/**
+ * @desc Auto-generate an intervention plan for a failing vault
+ * @route POST /api/interlock/mitigate-insolvency
+ */
+router.post('/mitigate-insolvency', protect, [
+    body('failedVaultId').isUUID().withMessage('failedVaultId must be a valid UUID'),
+    body('requiredLiquidityDelta').isFloat({ min: 0 }).withMessage('requiredLiquidityDelta must be a positive number'),
+    validateRequest
+], asyncHandler(async (req, res) => {
+    const { failedVaultId, requiredLiquidityDelta } = req.body;
+
+    const plan = await insolvencyMitigator.generateMitigationPlan(
+        req.user.id,
+        failedVaultId,
+        parseFloat(requiredLiquidityDelta)
+    );
+
+    new ApiResponse(200, plan, `Mitigation plan generated for Vault ${failedVaultId}`).send(res);
+}));
 
 export default router;

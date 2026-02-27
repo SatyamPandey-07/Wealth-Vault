@@ -129,8 +129,8 @@ import { securityGuard } from "./middleware/securityGuard.js";
 import { auditRequestIdMiddleware } from "./middleware/auditMiddleware.js";
 import { initializeDefaultTaxCategories } from "./services/taxService.js";
 import marketData from "./services/marketData.js";
-import auditTrailSealer from "./jobs/auditTrailSealer.js";
-import auditIntegrityScanner from "./jobs/auditIntegrityScanner.js";
+import cascadeMonitorJob from "./jobs/cascadeMonitorJob.js";
+import topologyGarbageCollector from "./jobs/topologyGarbageCollector.js";
 
 // Event Listeners
 import { initializeBudgetListeners } from "./listeners/budgetListeners.js";
@@ -299,6 +299,7 @@ app.use("/api/expenses", userLimiter, securityGuard, expenseRoutes);
 app.use("/api/goals", userLimiter, goalRoutes);
 app.use("/api/categories", userLimiter, categoryRoutes);
 app.use("/api/analytics", userLimiter, analyticsRoutes);
+app.use("/api/interlock", userLimiter, interlockRoutes);
 // Apply presence tracker to all protected routes
 app.use("/api", presenceTracker);
 app.use("/api/vaults", userLimiter, vaultRoutes);
@@ -372,9 +373,8 @@ app.use(globalErrorHandler);
 const PORT = process.env.PORT || 5000;
 
 if (process.env.NODE_ENV !== 'test') {
-  auditTrailSealer.start();
-  auditIntegrityScanner.start();
-
+  cascadeMonitorJob.start();
+  topologyGarbageCollector.start();
   app.listen(PORT, () => {
     logInfo('Server started successfully', {
       port: PORT,

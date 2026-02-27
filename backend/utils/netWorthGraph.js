@@ -211,12 +211,24 @@ export class NetWorthGraph {
             nodeRes.lossPropagated += loss;
             nodeRes.impactedLevel = Math.max(nodeRes.impactedLevel, level);
 
+            // Insolvency Threshold: The maximum loss a vault can take before hitting 0
+            nodeRes.insolvencyThreshold = Math.max(0, nodeRes.remainingNetWorth);
+
             if (nodeRes.remainingNetWorth < 0) {
                 nodeRes.isInsolvent = true;
             }
 
             // Propagate to lenders (Who have assets in THIS vault)
             const graphNode = this.nodes.get(id);
+
+            // Fragile Link Detection: If a vault has many liabilities (> 2) and drops 
+            // significantly under shock, it represents a fragile "linchpin" link
+            if (graphNode.liabilities.length >= 2 && loss > (graphNode.cashBalance * 0.2)) {
+                nodeRes.isFragileLink = true;
+            } else {
+                nodeRes.isFragileLink = false;
+            }
+
             for (const liability of graphNode.liabilities) {
                 const lenderId = liability.sourceVaultId;
                 // If this node fails or is shocked, the lender's asset is at risk
