@@ -4566,3 +4566,38 @@ export const stressTestSimulations = pgTable('stress_test_simulations', {
     isSystemTriggered: boolean('is_system_triggered').default(false),
     createdAt: timestamp('created_at').defaultNow(),
 });
+
+// ============================================================================
+// PROBABILISTIC MONTE CARLO LONGEVITY & ESTATE-TAX FORECASTER (#480)
+// ============================================================================
+
+export const monteCarloRuns = pgTable('monte_carlo_runs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    simulationParams: jsonb('simulation_params').notNull(),
+    longevityRiskScore: numeric('longevity_risk_score', { precision: 5, scale: 2 }), // probability of outliving capital
+    estateTaxBreachYear: integer('estate_tax_breach_year'),
+    successRate: numeric('success_rate', { precision: 5, scale: 2 }),
+    percentiles: jsonb('percentiles').notNull(), // 10th, 50th, 90th percentile trajectories
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const mortalityAssumptions = pgTable('mortality_assumptions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    currentAge: integer('current_age').notNull(),
+    targetRetirementAge: integer('target_retirement_age').notNull(),
+    lifeExpectancy: integer('life_expectancy').notNull(),
+    healthMultiplier: numeric('health_multiplier', { precision: 3, scale: 2 }).default('1.00'), // Adjusts base mortality table
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const estateBrackets = pgTable('estate_brackets', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    jurisdiction: text('jurisdiction').notNull(), // e.g. "US_FEDERAL", "STATE_NY"
+    exemptionThreshold: numeric('exemption_threshold', { precision: 20, scale: 2 }).notNull(),
+    taxRatePercentage: numeric('tax_rate_percentage', { precision: 5, scale: 2 }).notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+});

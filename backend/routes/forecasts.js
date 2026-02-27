@@ -125,4 +125,40 @@ router.get('/butterfly/scenarios', protect, asyncHandler(async (req, res) => {
   new ApiResponse(200, scenarios).send(res);
 }));
 
+import { monteCarloRuns } from '../db/schema.js';
+import chartDataAggregator from '../utils/chartDataAggregator.js';
+
+/**
+ * @desc Get the aggressive probabilistic 10k monte carlo runs (#480)
+ * @route GET /api/forecasts/monte-carlo/curves
+ */
+router.get('/monte-carlo/curves', protect, asyncHandler(async (req, res) => {
+  // Return latest simulation job output
+  const [latest] = await db.select().from(monteCarloRuns)
+    .where(eq(monteCarloRuns.userId, req.user.id))
+    .orderBy(desc(monteCarloRuns.createdAt))
+    .limit(1);
+
+  if (!latest) {
+    return res.status(404).json(new ApiResponse(404, null, 'No Monte Carlo simulations found for this user. Wait for the overnight batch job.'));
+  }
+
+  const { currentAge, expectedDeathAge } = latest.simulationParams;
+  const currentYear = new Date().getFullYear();
+
+  const chartData = chartDataAggregator.formatMonteCarloForUI(
+    latest.percentiles,
+    currentYear,
+    currentAge,
+    expectedDeathAge
+  );
+
+  new ApiResponse(200, {
+    longevityRiskScore: latest.longevityRiskScore,
+    successRate: latest.successRate,
+    estateTaxBreachYear: latest.estateTaxBreachYear,
+    curves: chartData
+  }).send(res);
+}));
+
 export default router;
