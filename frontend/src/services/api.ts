@@ -1234,6 +1234,46 @@ export const investmentsAPI = {
         method: 'POST',
       });
     },
+
+    // Rebalancing API
+    getRebalancingAlerts: async (portfolioId: string, threshold: number = 5, includeResolved: boolean = false) => {
+      return apiRequest<any>(`/investments/portfolios/${portfolioId}/rebalancing/alerts`, {
+        method: 'GET',
+        params: { threshold, includeResolved },
+      });
+    },
+
+    getRebalancingRecommendations: async (portfolioId: string, options: any = {}) => {
+      return apiRequest<any>(`/investments/portfolios/${portfolioId}/rebalancing/recommendations`, {
+        method: 'GET',
+        params: options,
+      });
+    },
+
+    executeRebalancing: async (portfolioId: string, rebalanceData: any) => {
+      return apiRequest<any>(`/investments/portfolios/${portfolioId}/rebalancing/execute`, {
+        method: 'POST',
+        data: rebalanceData,
+      });
+    },
+
+    getRebalancingHistory: async (portfolioId: string, options: any = {}) => {
+      return apiRequest<any>(`/investments/portfolios/${portfolioId}/rebalancing/history`, {
+        method: 'GET',
+        params: options,
+      });
+    },
+
+    getRebalancingSettings: async (portfolioId: string) => {
+      return apiRequest<any>(`/investments/portfolios/${portfolioId}/rebalancing/settings`);
+    },
+
+    updateRebalancingSettings: async (portfolioId: string, settings: any) => {
+      return apiRequest<any>(`/investments/portfolios/${portfolioId}/rebalancing/settings`, {
+        method: 'PUT',
+        data: settings,
+      });
+    },
   },
 
   // Investment CRUD

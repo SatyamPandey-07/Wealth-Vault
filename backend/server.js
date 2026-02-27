@@ -349,6 +349,9 @@ app.use("/api/liquidity/graph", userLimiter, liquidityGraphRoutes);
 
 
 
+// Family Financial Planning routes
+app.use("/api/family", userLimiter, familyRoutes);
+
 // Secure file server for uploaded files
 app.use("/uploads", createFileServerRoute());
 
