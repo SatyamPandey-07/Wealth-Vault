@@ -12,6 +12,7 @@ import anomalyScanner from '../services/anomalyScanner.js';
 import hedgingOrchestrator from '../services/hedgingOrchestrator.js';
 import workflowEngine from '../services/workflowEngine.js';
 import { signalAutopilot } from '../middleware/triggerInterceptor.js';
+import auditVerifierService from '../services/auditVerifierService.js';
 
 const router = express.Router();
 
@@ -452,6 +453,23 @@ router.post('/workflows/:workflowId/execute', protect, asyncHandler(async (req, 
     if (!workflow || workflow.userId !== req.user.id) return res.status(404).json({ message: 'Workflow not found' });
     await workflowEngine.manualTrigger(workflow.id, req.user.id);
     new ApiResponse(200, null, 'Workflow execution triggered manually').send(res);
+}));
+
+/**
+ * @route   GET /api/governance/verify-audit
+ * @desc    Cryptographically prove database row integrity (#475)
+ * @access  Private
+ */
+router.get('/verify-audit', protect, asyncHandler(async (req, res) => {
+    const { eventId, tableType } = req.query;
+
+    if (!eventId || !tableType) {
+        return res.status(400).json(new ApiResponse(400, null, 'eventId and tableType are required.'));
+    }
+
+    const proof = await auditVerifierService.getProofOfInnocence(eventId, tableType);
+
+    return res.json(new ApiResponse(200, proof, 'Cryptographic proof generated. integrity verified.'));
 }));
 
 export default router;

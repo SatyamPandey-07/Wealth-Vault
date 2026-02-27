@@ -350,6 +350,8 @@ export const ledgerEntries = pgTable('ledger_entries', {
     transactionDate: timestamp('transaction_date').defaultNow(),
     isReversed: boolean('is_reversed').default(false),
     reversedBy: uuid('reversed_by'), // Reference to reversing entry
+    isSealed: boolean('is_sealed').default(false),
+    auditAnchorId: uuid('audit_anchor_id').references(() => auditAnchors.id),
     metadata: jsonb('metadata').default({}),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
@@ -2232,6 +2234,8 @@ export const securityEvents = pgTable('security_events', {
     status: text('status').default('info'), // info, warning, critical
     details: jsonb('details').default({}),
     notified: boolean('notified').default(false),
+    isSealed: boolean('is_sealed').default(false),
+    auditAnchorId: uuid('audit_anchor_id').references(() => auditAnchors.id),
     createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -2317,6 +2321,25 @@ export const forensicQueries = pgTable('forensic_queries', {
 }, (table) => ({
     userIdx: index('idx_forensic_user').on(table.userId),
     typeIdx: index('idx_forensic_type').on(table.queryType),
+}));
+
+// ============================================================================
+// IMMUTABLE GOVERNANCE & MERKLE AUDITS (#475)
+// ============================================================================
+
+export const auditAnchors = pgTable('audit_anchors', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    merkleRoot: text('merkle_root').notNull(),
+    previousAnchorId: uuid('previous_anchor_id'), // Hash chain link
+    eventCount: integer('event_count').notNull(),
+    sealedAt: timestamp('sealed_at').defaultNow(),
+    periodStart: timestamp('period_start').notNull(),
+    periodEnd: timestamp('period_end').notNull(),
+    sealMetadata: jsonb('seal_metadata').default({}), // Storage for range info
+});
+
+export const auditAnchorsRelations = relations(auditAnchors, ({ one }) => ({
+    previousAnchor: one(auditAnchors, { fields: [auditAnchors.previousAnchorId], references: [auditAnchors.id] }),
 }));
 
 // Challenges Table (Social Financial Challenges)
