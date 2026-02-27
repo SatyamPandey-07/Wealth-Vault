@@ -2259,6 +2259,8 @@ export const auditLogs = pgTable('audit_logs', {
     userAgent: text('user_agent'),
     sessionId: text('session_id'),
     requestId: text('request_id'),
+    isSealed: boolean('is_sealed').default(false),
+    auditAnchorId: uuid('audit_anchor_id').references(() => auditAnchors.id),
     performedAt: timestamp('performed_at').defaultNow(),
 }, (table) => ({
     userIdx: index('idx_audit_user').on(table.userId),
@@ -4615,4 +4617,54 @@ export const escrowAuditLogs = pgTable('escrow_audit_logs', {
     actor: text('actor').notNull(),
     details: jsonb('details'),
     timestamp: timestamp('timestamp').defaultNow(),
+});
+// ============================================================================
+// MILP-BASED CROSS-BORDER LIQUIDITY OPTIMIZER (#476)
+// ============================================================================
+
+export const transferPaths = pgTable('transfer_paths', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    sourceVaultId: uuid('source_vault_id').references(() => vaults.id).notNull(),
+    destinationVaultId: uuid('destination_vault_id').references(() => vaults.id).notNull(),
+    baseFee: numeric('base_fee', { precision: 10, scale: 2 }).default('0'), // Transaction flat fee
+    platformFeePct: numeric('platform_fee_pct', { precision: 5, scale: 4 }).default('0'), // 0.001 = 0.1%
+    averageProcessingTimeDays: integer('avg_processing_time_days').default(1),
+    isInternational: boolean('is_international').default(false),
+    isActive: boolean('is_active').default(true),
+});
+
+export const entityTaxRules = pgTable('entity_tax_rules', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    sourceEntityId: uuid('source_entity_id').references(() => familyEntities.id).notNull(),
+    destinationEntityId: uuid('destination_entity_id').references(() => familyEntities.id).notNull(),
+    withholdingTaxPct: numeric('withholding_tax_pct', { precision: 5, scale: 4 }).default('0'),
+    regulatoryFilingRequired: boolean('regulatory_filing_required').default(false),
+});
+
+export const optimizationRuns = pgTable('optimization_runs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    targetAmountUSD: numeric('target_amount_usd', { precision: 20, scale: 2 }).notNull(),
+    destinationVaultId: uuid('destination_vault_id').references(() => vaults.id).notNull(),
+    optimalPath: jsonb('optimal_path').notNull(), // Array of steps
+    totalEstimatedFeeUSD: numeric('total_estimated_fee_usd', { precision: 15, scale: 2 }),
+    totalTaxImpactUSD: numeric('total_tax_impact_usd', { precision: 15, scale: 2 }),
+    status: text('status').default('calculated'), // calculated, executed, failed
+    createdAt: timestamp('created_at').defaultNow(),
+});
+// ============================================================================
+// CRYPTOGRAPHIC MERKLE AUDIT TRAIL (#475)
+// ============================================================================
+
+export const auditAnchors = pgTable('audit_anchors', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    merkleRoot: text('merkle_root').notNull(),
+    startSlot: timestamp('start_slot').notNull(),
+    endSlot: timestamp('end_slot').notNull(),
+    previousAnchorHash: text('previous_anchor_hash'), // For hash chaining anchors
+    eventCount: integer('event_count').default(0),
+    signature: text('signature'), // Optional: System signature of the root
+    createdAt: timestamp('created_at').defaultNow(),
 });

@@ -140,6 +140,10 @@ import { initializeNotificationListeners } from "./listeners/notificationListene
 import { initializeAnalyticsListeners } from "./listeners/analyticsListeners.js";
 import { initializeSubscriptionListeners } from "./listeners/subscriptionListeners.js";
 import { initializeSavingsListeners } from "./listeners/savingsListeners.js";
+import thresholdMonitor from "./services/thresholdMonitor.js";
+import liquidityRechargeJob from "./jobs/liquidityRechargeJob.js";
+import auditTrailSealer from "./jobs/auditTrailSealer.js";
+import { initializeLiquidityListeners } from "./listeners/liquidityListeners.js";
 import workflowEngine from "./services/workflowEngine.js"; // Bootstrap event hooks
 
 // Load environment variables
@@ -178,6 +182,7 @@ initializeAnalyticsListeners();
 initializeSubscriptionListeners();
 initializeSavingsListeners();
 initializeAutopilotListeners();
+initializeLiquidityListeners();
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -442,8 +447,11 @@ if (process.env.NODE_ENV !== 'test') {
     scheduleOracleSync();
     liquiditySweepJob.init();
     interlockAccrualSync.init();
+    thresholdMonitor.start();
     escrowValuationJob.start();
     hedgeDecayMonitor.start();
+    liquidityRechargeJob.start();
+    auditTrailSealer.start();
 
     // Add debt services to app.locals for middleware/route access
     app.locals.debtEngine = debtEngine;
