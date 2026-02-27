@@ -1215,6 +1215,49 @@ export const washSaleViolations = pgTable('wash_sale_violations', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// ============================================================================
+// ALGORITHMIC MULTI-ENTITY TAX-LOSS HARVESTING (#482)
+// ============================================================================
+
+export const taxLots = pgTable('tax_lots', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    assetSymbol: text('asset_symbol').notNull(),
+    quantity: numeric('quantity', { precision: 20, scale: 8 }).notNull(),
+    purchasePrice: numeric('purchase_price', { precision: 20, scale: 2 }).notNull(),
+    purchaseDate: timestamp('purchase_date').notNull(),
+    isSold: boolean('is_sold').default(false),
+    soldDate: timestamp('sold_date'),
+    soldPrice: numeric('sold_price', { precision: 20, scale: 2 }),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const washSaleWindows = pgTable('wash_sale_windows', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    assetSymbol: text('asset_symbol').notNull(),
+    windowStart: timestamp('window_start').notNull(),
+    windowEnd: timestamp('window_end').notNull(),
+    restrictedVaultIds: jsonb('restricted_vault_ids').notNull(), // List of vaults where purchase is forbidden or flagged
+    reason: text('reason'), // e.g., "Harvest of Lot ID 123"
+    isActive: boolean('is_active').default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const harvestEvents = pgTable('harvest_events', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    assetSymbol: text('asset_symbol').notNull(),
+    totalLossHarvested: numeric('total_loss_harvested', { precision: 20, scale: 2 }).notNull(),
+    proxyAssetSuggested: text('proxy_asset_suggested'),
+    status: text('status').default('proposed'), // proposed, executed, completed
+    metadata: jsonb('metadata').default({}), // contains list of lot IDs harvested
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
 export const assetCorrelationMatrix = pgTable('asset_correlation_matrix', {
     id: uuid('id').defaultRandom().primaryKey(),
     baseAssetSymbol: text('base_asset_symbol').notNull(),
