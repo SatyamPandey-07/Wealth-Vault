@@ -4927,3 +4927,149 @@ export const auditAnchors = pgTable('audit_anchors', {
     signature: text('signature'), // Optional: System signature of the root
     createdAt: timestamp('created_at').defaultNow(),
 });
+
+// ============================================================================
+// MULTI-SIG TREASURY & SOCIAL RECOVERY LAYER (#497)
+// ============================================================================
+
+// Vault Guardians - Shamir Secret Sharing shard holders
+export const vaultGuardians = pgTable('vault_guardians', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(), // Vault owner
+    guardianUserId: uuid('guardian_user_id').references(() => users.id).notNull(), // Guardian
+    
+    // Guardian Identity
+    guardianEmail: text('guardian_email').notNull(),
+    guardianName: text('guardian_name').notNull(),
+    guardianRole: text('guardian_role').notNull(), // 'family', 'lawyer', 'accountant', 'trustee', 'executor', 'friend'
+    
+    // Shamir Secret Sharing
+    shardIndex: integer('shard_index').notNull(), // 1-7
+    encryptedShard: text('encrypted_shard').notNull(), // Encrypted with guardian's public key
+    shardChecksum: text('shard_checksum').notNull(), // Hash for integrity verification
+    
+    // Permissions
+    canInitiateRecovery: boolean('can_initiate_recovery').default(true),
+    canApproveTransactions: boolean('can_approve_transactions').default(false),
+    approvalWeight: integer('approval_weight').default(1), // For weighted multi-sig
+    
+    // Status
+    isActive: boolean('is_active').default(true),
+    activatedAt: timestamp('activated_at'),
+    lastVerifiedAt: timestamp('last_verified_at'), // Last time guardian confirmed their shard
+    
+    // Metadata
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Recovery Requests - State machine for social recovery process
+export const recoveryRequests = pgTable('recovery_requests', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(), // Vault owner
+    initiatorGuardianId: uuid('initiator_guardian_id').references(() => vaultGuardians.id).notNull(),
+    
+    // Recovery Configuration
+    requiredShards: integer('required_shards').notNull().default(3), // M in M-of-N threshold
+    totalShards: integer('total_shards').notNull().default(5), // N in M-of-N threshold
+    
+    // State Machine
+    status: text('status').notNull().default('initiated'), // 'initiated', 'collecting_shards', 'cure_period', 'challenged', 'approved', 'executed', 'rejected', 'expired'
+    
+    // Cure Period (multi-day waiting period before execution)
+    curePeriodDays: integer('cure_period_days').notNull().default(7), // Default 7-day wait
+    cureExpiresAt: timestamp('cure_expires_at'), // When cure period ends
+    
+    // Challenge Mechanism
+    challengedAt: timestamp('challenged_at'),
+    challengedByUserId: uuid('challenged_by_user_id').references(() => users.id),
+    challengeReason: text('challenge_reason'),
+    
+    // Recovery Target
+    newOwnerEmail: text('new_owner_email').notNull(), // Email of recovery recipient
+    newOwnerUserId: uuid('new_owner_user_id').references(() => users.id), // Set after email verification
+    
+    // Execution
+    shardsCollected: integer('shards_collected').default(0),
+    reconstructedSecretHash: text('reconstructed_secret_hash'), // Hash of reconstructed secret for verification
+    executedAt: timestamp('executed_at'),
+    executedByUserId: uuid('executed_by_user_id').references(() => users.id),
+    
+    // Timestamps
+    initiatedAt: timestamp('initiated_at').defaultNow(),
+    expiresAt: timestamp('expires_at').notNull(), // Absolute expiration (30 days from initiation)
+    completedAt: timestamp('completed_at'),
+    
+    // Metadata
+    metadata: jsonb('metadata').default({}),
+    auditLog: jsonb('audit_log').default([]), // State transitions log
+});
+
+// Guardian Votes - Individual guardian shard submissions for recovery
+export const guardianVotes = pgTable('guardian_votes', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    recoveryRequestId: uuid('recovery_request_id').references(() => recoveryRequests.id, { onDelete: 'cascade' }).notNull(),
+    guardianId: uuid('guardian_id').references(() => vaultGuardians.id, { onDelete: 'cascade' }).notNull(),
+    
+    // Vote Type
+    voteType: text('vote_type').notNull(), // 'shard_submission', 'approval', 'rejection', 'challenge'
+    
+    // Shard Submission (for recovery)
+    submittedShard: text('submitted_shard'), // Decrypted shard provided by guardian
+    shardVerified: boolean('shard_verified').default(false),
+    
+    // Transaction Approval (for recursive multi-sig)
+    transactionId: uuid('transaction_id'), // Reference to pending transaction
+    approvalDecision: text('approval_decision'), // 'approve', 'reject', 'abstain'
+    
+    // Verification
+    signatureProof: text('signature_proof'), // Digital signature for non-repudiation
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    
+    // Time-Lock Constraints
+    submittedAt: timestamp('submitted_at').defaultNow(),
+    expiresAt: timestamp('expires_at'), // Time-locked signature validity
+    
+    // Metadata
+    comments: text('comments'),
+    metadata: jsonb('metadata').default({}),
+});
+
+// Recursive Multi-Sig Rules - Complex approval logic for high-stakes transactions
+export const recursiveMultiSigRules = pgTable('recursive_multi_sig_rules', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    
+    // Rule Configuration
+    ruleName: text('rule_name').notNull(),
+    ruleDescription: text('rule_description'),
+    priority: integer('priority').default(0), // Higher priority rules evaluated first
+    
+    // Trigger Conditions
+    triggerType: text('trigger_type').notNull(), // 'transaction_amount', 'vault_withdrawal', 'ownership_transfer', 'guardian_change'
+    minAmount: numeric('min_amount', { precision: 20, scale: 2 }), // Minimum transaction amount to trigger
+    maxAmount: numeric('max_amount', { precision: 20, scale: 2 }), // Maximum transaction amount covered
+    
+    // Approval Logic (stored as JSONB for flexibility)
+    // Example: {"operator": "OR", "conditions": [
+    //   {"operator": "AND", "rules": [{"role": "admin", "count": 1}, {"role": "lawyer", "count": 2}]},
+    //   {"operator": "ALL", "roles": ["family"], "count": 5}
+    // ]}
+    approvalLogic: jsonb('approval_logic').notNull(),
+    
+    // Timeout Configuration
+    approvalTimeoutHours: integer('approval_timeout_hours').default(72), // 3 days default
+    requiresUnanimous: boolean('requires_unanimous').default(false),
+    
+    // Status
+    isActive: boolean('is_active').default(true),
+    
+    // Metadata
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
