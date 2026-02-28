@@ -62,6 +62,7 @@ import interlockRoutes from "./routes/interlock.js";
 import liquiditySweepJob from "./jobs/liquiditySweepJob.js";
 import interlockAccrualSync from "./jobs/interlockAccrualSync.js";
 import forecastRoutes from "./routes/forecasts.js";
+import monteCarloRoutes from "./routes/monteCarloForecasting.js";
 import liquidityOptimizerRoutes from "./routes/liquidityOptimizer.js";
 import forensicRoutes from "./routes/forensic.js";
 import rebalancingRoutes from "./routes/rebalancing.js";
@@ -148,6 +149,7 @@ import taxHarvestScanner from "./jobs/taxHarvestScanner.js";
 import washSaleExpirationJob from "./jobs/washSaleExpirationJob.js";
 import { initializeLiquidityListeners } from "./listeners/liquidityListeners.js";
 import workflowEngine from "./services/workflowEngine.js"; // Bootstrap event hooks
+import { scheduleNightlySimulations } from "./jobs/nightlySimRunner.js";
 
 // Load environment variables
 dotenv.config();
@@ -322,6 +324,7 @@ app.use("/api/debts", userLimiter, debtRoutes);
 app.use("/api/wallets", userLimiter, walletRoutes);
 app.use("/api/fx", userLimiter, fxRoutes);
 app.use("/api/forecasts", userLimiter, forecastRoutes);
+app.use("/api/monte-carlo", userLimiter, monteCarloRoutes);
 app.use("/api/gemini", aiLimiter, geminiRouter);
 app.use("/api/currencies", userLimiter, currenciesRoutes);
 app.use("/api/audit", userLimiter, auditRoutes);
@@ -461,6 +464,7 @@ if (process.env.NODE_ENV !== 'test') {
     auditTrailSealer.start();
     taxHarvestScanner.start();
     washSaleExpirationJob.start();
+    scheduleNightlySimulations();
 
     // Add debt services to app.locals for middleware/route access
     app.locals.debtEngine = debtEngine;
