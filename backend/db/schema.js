@@ -1408,6 +1408,191 @@ export const businessLedgers = pgTable('business_ledgers', {
 });
 
 // ============================================================================
+// MONTE CARLO FORECASTING LAYER
+// ============================================================================
+
+// Forecast Scenarios Table
+// Stores simulation parameters and "What-If" variables for Monte Carlo forecasting
+export const forecastScenarios = pgTable('forecast_scenarios', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    
+    // Scenario identity
+    scenarioName: text('scenario_name').notNull(),
+    description: text('description'),
+    scenarioType: text('scenario_type').notNull().default('baseline'), // 'baseline', 'optimistic', 'pessimistic', 'custom'
+    
+    // Simulation parameters
+    simulationCount: integer('simulation_count').default(10000), // Number of Monte Carlo runs
+    forecastHorizonDays: integer('forecast_horizon_days').default(365), // How far to predict
+    confidenceLevel: numeric('confidence_level', { precision: 3, scale: 2 }).default('0.90'), // P10, P50, P90
+    
+    // Revenue modeling
+    revenueParams: jsonb('revenue_params').default({
+        meanMonthly: 0,
+        stdDeviation: 0,
+        distribution: 'normal', // 'normal', 'lognormal', 'uniform'
+        growthRate: 0,
+        seasonality: []
+    }),
+    
+    // Expense modeling
+    expenseParams: jsonb('expense_params').default({
+        fixedCosts: 0,
+        variableCostsMean: 0,
+        variableCostsStdDev: 0,
+        shockProbability: 0.05, // Probability of expense shock
+        shockMagnitude: 1.5 // Multiplier when shock occurs
+    }),
+    
+    // External economic markers
+    economicFactors: jsonb('economic_factors').default({
+        inflationRate: 0.03,
+        interestRate: 0.05,
+        marketVolatility: 0.15,
+        unemploymentRate: 0.04
+    }),
+    
+    // Cash reserve constraints
+    initialCashBalance: numeric('initial_cash_balance', { precision: 15, 2 }).default('0'),
+    minimumCashReserve: numeric('minimum_cash_reserve', { precision: 15, 2 }).default('0'),
+    
+    // Simulation results cache
+    lastSimulationResults: jsonb('last_simulation_results').default({}),
+    lastRunAt: timestamp('last_run_at'),
+    
+    // Status
+    isActive: boolean('is_active').default(true),
+    isLocked: boolean('is_locked').default(false), // Prevent modifications during simulation
+    
+    // Metadata
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Forecast Simulation Results Table
+// Stores individual simulation run results for detailed analysis
+export const forecastSimulationResults = pgTable('forecast_simulation_results', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    scenarioId: uuid('scenario_id').references(() => forecastScenarios.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    
+    // Simulation batch identifier
+    batchId: uuid('batch_id').notNull(), // Groups results from single simulation run
+    simulationNumber: integer('simulation_number').notNull(), // 1 to N
+    
+    // Timeline data (daily cashflow projections)
+    cashflowTimeline: jsonb('cashflow_timeline').notNull().default('[]'), // [{day: 1, balance: 1000, revenue: 500, expenses: 300}, ...]
+    
+    // Key metrics from this simulation path
+    finalCashBalance: numeric('final_cash_balance', { precision: 15, 2 }).notNull(),
+    minCashBalance: numeric('min_cash_balance', { precision: 15, 2 }).notNull(),
+    maxCashBalance: numeric('max_cash_balance', { precision: 15, 2 }).notNull(),
+    dayOfMinBalance: integer('day_of_min_balance'),
+    daysToCashDepletion: integer('days_to_cash_depletion'), // NULL if never depleted
+    
+    // Statistical markers
+    totalRevenue: numeric('total_revenue', { precision: 15, 2 }).notNull(),
+    totalExpenses: numeric('total_expenses', { precision: 15, 2 }).notNull(),
+    netCashFlow: numeric('net_cash_flow', { precision: 15, 2 }).notNull(),
+    volatilityScore: doublePrecision('volatility_score'), // Std dev of daily changes
+    
+    // Risk events encountered
+    expenseShockCount: integer('expense_shock_count').default(0),
+    revenueDroughtDays: integer('revenue_drought_days').default(0), // Days with below-average revenue
+    
+    // Execution metadata
+    executionTimeMs: integer('execution_time_ms'),
+    seedValue: integer('seed_value'), // Random seed for reproducibility
+    
+    // Timestamps
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Forecast Aggregates Table
+// Pre-computed statistical aggregates for fast dashboard rendering
+export const forecastAggregates = pgTable('forecast_aggregates', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    scenarioId: uuid('scenario_id').references(() => forecastScenarios.id, { onDelete: 'cascade' }).notNull().unique(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    batchId: uuid('batch_id').notNull(),
+    
+    // Confidence intervals (P10, P50, P90)
+    p10FinalBalance: numeric('p10_final_balance', { precision: 15, 2 }).notNull(), // 10th percentile - pessimistic
+    p50FinalBalance: numeric('p50_final_balance', { precision: 15, 2 }).notNull(), // 50th percentile - median
+    p90FinalBalance: numeric('p90_final_balance', { precision: 15, 2 }).notNull(), // 90th percentile - optimistic
+    
+    // Cashflow runway analysis
+    p10DaysToDepletion: integer('p10_days_to_depletion'), // 10% chance of running out by this day
+    p50DaysToDepletion: integer('p50_days_to_depletion'), // Median runway
+    p90DaysToDepletion: integer('p90_days_to_depletion'), // 90% safe until this day
+    depletionProbability: numeric('depletion_probability', { precision: 5, 4 }), // % of sims that depleted
+    
+    // Fan chart data (daily percentile bands)
+    dailyPercentiles: jsonb('daily_percentiles').notNull().default('[]'), // [{day: 1, p10: 900, p25: 950, p50: 1000, p75: 1050, p90: 1100}, ...]
+    
+    // Distribution histograms
+    finalBalanceDistribution: jsonb('final_balance_distribution').default('[]'), // Histogram bins
+    dailyVolatilityDistribution: jsonb('daily_volatility_distribution').default('[]'),
+    
+    // Summary statistics
+    meanFinalBalance: numeric('mean_final_balance', { precision: 15, 2 }).notNull(),
+    stdDevFinalBalance: numeric('std_dev_final_balance', { precision: 15, 2 }).notNull(),
+    skewness: doublePrecision('skewness'), // Distribution skewness
+    kurtosis: doublePrecision('kurtosis'), // Distribution kurtosis (tail risk)
+    
+    // Risk metrics
+    valueatRisk95: numeric('value_at_risk_95', { precision: 15, 2 }), // 95% VaR
+    conditionalVaR95: numeric('conditional_var_95', { precision: 15, 2 }), // Expected shortfall
+    maxDrawdown: numeric('max_drawdown', { precision: 15, 2 }), // Worst drop from peak
+    
+    // Simulation metadata
+    totalSimulations: integer('total_simulations').notNull(),
+    successfulSimulations: integer('successful_simulations').notNull(),
+    failedSimulations: integer('failed_simulations').default(0),
+    totalExecutionTimeMs: integer('total_execution_time_ms'),
+    
+    // Timestamps
+    computedAt: timestamp('computed_at').defaultNow(),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Runway Alert Thresholds Table
+// User-defined thresholds for proactive alerts based on simulation results
+export const runwayAlertThresholds = pgTable('runway_alert_thresholds', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull().unique(),
+    
+    // Alert trigger conditions
+    minDaysRunwayP50: integer('min_days_runway_p50').default(90), // Alert if median runway < 90 days
+    maxDepletionProbability: numeric('max_depletion_probability', { precision: 5, 4 }).default('0.20'), // Alert if >20% depletion risk
+    minCashReserveP10: numeric('min_cash_reserve_p10', { precision: 15, 2 }).default('5000'), // Alert if P10 balance < $5k
+    
+    // Notification preferences
+    notificationChannels: jsonb('notification_channels').default({
+        email: true,
+        push: true,
+        sms: false,
+        inApp: true
+    }),
+    
+    // Circuit breaker settings
+    enableCircuitBreaker: boolean('enable_circuit_breaker').default(false), // Auto-block risky expenses
+    circuitBreakerThreshold: numeric('circuit_breaker_threshold', { precision: 5, 4 }).default('0.30'), // Trip at 30% depletion risk
+    
+    // Alert history
+    lastTriggeredAt: timestamp('last_triggered_at'),
+    alertCount: integer('alert_count').default(0),
+    
+    // Status
+    isActive: boolean('is_active').default(true),
+    
+    // Timestamps
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// ============================================================================
 // RELATIONS
 // ============================================================================
 
