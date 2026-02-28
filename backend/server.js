@@ -131,6 +131,7 @@ import { initializeDefaultTaxCategories } from "./services/taxService.js";
 import marketData from "./services/marketData.js";
 import cascadeMonitorJob from "./jobs/cascadeMonitorJob.js";
 import topologyGarbageCollector from "./jobs/topologyGarbageCollector.js";
+import wealthSimulationJob from "./jobs/wealthSimulationJob.js";
 import escrowValuationJob from "./jobs/escrowValuationJob.js";
 import hedgeDecayMonitor from "./jobs/hedgeDecayMonitor.js";
 
@@ -389,6 +390,7 @@ const PORT = process.env.PORT || 5000;
 if (process.env.NODE_ENV !== 'test') {
   cascadeMonitorJob.start();
   topologyGarbageCollector.start();
+  wealthSimulationJob.start();
   app.listen(PORT, () => {
     logInfo('Server started successfully', {
       port: PORT,
