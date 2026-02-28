@@ -1,217 +1,114 @@
 import db from '../config/db.js';
-import {
-    liquidityProjections,
-    liquidityOptimizerActions,
-    creditLines,
-    investments,
-    users,
-    expenses,
-    vaults,
-    internalDebts,
-    entities
-} from '../db/schema.js';
-import { eq, and, sql } from 'drizzle-orm';
-import runwayEngine from './runwayEngine.js';
-import taxService from './taxService.js';
-import taxStrategyEngine from './taxStrategyEngine.js';
-import liquidityMarketService from './liquidityMarketService.js';
-import auditService from './liquidityAuditService.js';
-import { MILPSolver } from '../utils/milpSolver.js';
-import { LiquidityGraph } from '../utils/liquidityGraph.js';
+import { transferPaths, entityTaxRules, optimizationRuns, vaults } from '../db/schema.js';
+import { eq, and } from 'drizzle-orm';
+import { logInfo, logError } from '../utils/logger.js';
+import marketData from './marketData.js';
+import GraphSolvers from '../utils/graphSolvers.js';
 
 /**
- * Liquidity Optimizer Service (L3 Expanded) (#476)
- * Handles Monte Carlo simulations and MILP-based cash flow orchestration.
+ * LiquidityOptimizerService (#476)
+ * Uses a weighted graph algorithm to find the cheapest pathway for capital.
+ * Costs include: FX spreads, entity-to-entity withholding taxes, and platform fees.
  */
 class LiquidityOptimizerService {
     /**
-     * Run Monte Carlo simulation for liquidity
+     * Finds the mathematically optimal path from source to target.
+     * @param {string} userId
+     * @param {string} destinationVaultId
+     * @param {number} amountUSD
      */
-    async simulateLiquidity(userId, iterations = 1000, daysAhead = 90) {
-        try {
-            const [user] = await db.select().from(users).where(eq(users.id, userId));
-            if (!user) throw new Error('User not found');
+    async findOptimalPath(userId, destinationVaultId, amountUSD) {
+        logInfo(`[LiquidityOptimizer] Optimizing path for $${amountUSD} to vault ${destinationVaultId}`);
 
-            const runway = await runwayEngine.calculateCurrentRunway(userId);
+        // 1. Load data
+        const allPaths = await db.select().from(transferPaths).where(eq(transferPaths.userId, userId));
+        const taxRules = await db.select().from(entityTaxRules).where(eq(entityTaxRules.userId, userId));
+        const allVaults = await db.select().from(vaults).where(eq(vaults.userId, userId));
 
-            const historicalExpenses = await db.select()
-                .from(expenses)
-                .where(eq(expenses.userId, userId));
+        // 2. Build adjacency list
+        const adj = {};
+        for (const path of allPaths) {
+            if (!adj[path.sourceVaultId]) adj[path.sourceVaultId] = [];
 
-            const expenseStats = runwayEngine.calculateMonthlyAverages(historicalExpenses);
-            const dailyVolatility = (expenseStats.volatility / Math.sqrt(30)) || (parseFloat(runway.monthlyExpenses) * 0.15 / Math.sqrt(30));
+            // Calculate edge weight
+            // Weight = BaseFee + (Amount * PlatformFeePct) + (Amount * TaxPct) + FX Spread (simulated)
+            const weight = await this.calculateStepCost(path, taxRules, amountUSD);
 
-            const dailyProjections = new Array(daysAhead).fill(0).map(() => []);
-
-            for (let i = 0; i < iterations; i++) {
-                let currentBalance = runway.currentBalance;
-                const avgDailyIncome = parseFloat(runway.monthlyIncome) / 30;
-                const avgDailyExpense = parseFloat(runway.monthlyExpenses) / 30;
-
-                for (let day = 0; day < daysAhead; day++) {
-                    const randomExpense = this.generateNormalRandom(avgDailyExpense, dailyVolatility);
-                    currentBalance += (avgDailyIncome - randomExpense);
-                    dailyProjections[day].push(currentBalance);
-                }
-            }
-
-            const finalProjections = [];
-            for (let day = 0; day < daysAhead; day++) {
-                const dayBalances = dailyProjections[day].sort((a, b) => a - b);
-                const p10 = dayBalances[Math.floor(iterations * 0.1)];
-                const p50 = dayBalances[Math.floor(iterations * 0.5)];
-                const p90 = dayBalances[Math.floor(iterations * 0.9)];
-                const crunchProb = dayBalances.filter(b => b <= 0).length / iterations;
-
-                const projectionDate = new Date();
-                projectionDate.setDate(projectionDate.getDate() + day);
-
-                finalProjections.push({
-                    userId,
-                    projectionDate,
-                    baseBalance: (runway.dailyProjections[day]?.balance || 0).toString(),
-                    p10Balance: p10.toString(),
-                    p50Balance: p50.toString(),
-                    p90Balance: p90.toString(),
-                    liquidityCrunchProbability: crunchProb,
-                    simulationMetadata: { iterations, daysAhead }
-                });
-            }
-
-            await db.delete(liquidityProjections).where(eq(liquidityProjections.userId, userId));
-            return await db.insert(liquidityProjections).values(finalProjections).returning();
-        } catch (error) {
-            console.error('Liquidity simulation failed:', error);
-            throw error;
+            adj[path.sourceVaultId].push({
+                to: path.destinationVaultId,
+                cost: weight,
+                pathId: path.id
+            });
         }
-    }
 
-    generateNormalRandom(mean, stdDev) {
-        let u = 0, v = 0;
-        while (u === 0) u = Math.random();
-        while (v === 0) v = Math.random();
-        const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
-        return mean + z * stdDev;
+        // 3. Dijkstra's Algorithm
+        const distances = {};
+        const previous = {};
+        const pq = new Set();
+
+        for (const v of allVaults) {
+            distances[v.id] = Infinity;
+            pq.add(v.id);
+        }
+
+        // We search from ALL vaults that have enough balance to the target
+        // For simplicity, let's assume we have a single starting source or we scan all candidates
+        const candidates = allVaults.filter(v => Number(v.balance) * (v.currency === 'USD' ? 1 : 0.9) >= amountUSD);
+
+        if (candidates.length === 0) throw new Error('Insufficient liquidity in any single vault to start transfer.');
+
+        // For simplicity in this demo, we'll pick the first liquid vault as the source.
+        // In a more complex L3 version, we'd run Dijkstra from multiple sources.
+        const startVault = candidates[0];
+        const { distances, previous } = GraphSolvers.dijkstra(adj, startVault.id, destinationVaultId);
+
+        if (distances[destinationVaultId] === Infinity) {
+            throw new Error('No viable path found to destination vault.');
+        }
+
+        // 4. Reconstruct path
+        const path = [];
+        let curr = destinationVaultId;
+        while (previous[curr]) {
+            path.unshift(previous[curr]);
+            curr = previous[curr].from;
+        }
+
+        // 5. Store run history
+        const [run] = await db.insert(optimizationRuns).values({
+            userId,
+            targetAmountUSD: amountUSD.toString(),
+            destinationVaultId,
+            optimalPath: path,
+            totalEstimatedFeeUSD: distances[destinationVaultId].toString(),
+            status: 'calculated'
+        }).returning();
+
+        return { run, path, totalCost: distances[destinationVaultId] };
     }
 
     /**
-     * MILP-Based Cross-Border Liquidity Transfer Optimizer (#476)
-     * Finds the most capital-efficient path for moving liquidity.
+     * Calculates cost of a specific transfer step.
      */
-    async findOptimalRoute(userId, sourceVaultId, destVaultId, amount) {
-        try {
-            // 1. Context Acquisition
-            const [userVaults, userEntities, allDebts] = await Promise.all([
-                db.select().from(vaults).where(eq(vaults.ownerId, userId)),
-                db.select().from(entities).where(eq(entities.userId, userId)),
-                db.select().from(internalDebts).where(eq(internalDebts.userId, userId))
-            ]);
+    async calculateStepCost(path, taxRules, amount) {
+        const platformFee = Number(path.baseFee) + (amount * Number(path.platformFeePct));
 
-            // 2. Graph Construction
-            const nodes = userVaults.map(v => v.id);
-            const edges = [];
+        // Find tax rule between entities
+        const [sourceVault] = await db.select().from(vaults).where(eq(vaults.id, path.sourceVaultId));
+        const [destVault] = await db.select().from(vaults).where(eq(vaults.id, path.destinationVaultId));
 
-            // Corridors: Inter-Vault Transfers
-            for (const vFrom of userVaults) {
-                for (const vTo of userVaults) {
-                    if (vFrom.id === vTo.id) continue;
+        const taxRule = taxRules.find(r =>
+            r.sourceEntityId === sourceVault.entityId &&
+            r.destinationEntityId === destVault.entityId
+        );
 
-                    let efficiency = 1.0;
+        const taxEffect = taxRule ? (amount * Number(taxRule.withholdingTaxPct)) : 0;
 
-                    // FX Logic
-                    const mktEff = await liquidityMarketService.getMarketEfficiency(vFrom.currency, vTo.currency);
-                    efficiency *= mktEff;
+        // Simulating FX spread cost if currencies differ
+        const fxCost = (sourceVault.currency !== destVault.currency) ? (amount * 0.005) : 0; // 50 bps spread
 
-                    // Tax Logic
-                    const entityFrom = userEntities.find(e => e.metadata?.vaultIds?.includes(vFrom.id));
-                    const entityTo = userEntities.find(e => e.metadata?.vaultIds?.includes(vTo.id));
-                    efficiency *= (1 - taxStrategyEngine.calculateFriction(entityFrom, entityTo));
-
-                    edges.push({
-                        from: vFrom.id,
-                        to: vTo.id,
-                        efficiency,
-                        type: 'direct_transfer',
-                        description: `Transfer ${vFrom.currency}->${vTo.currency} (Bank/FX)`,
-                        metadata: { fixedFee: 15 } // $15 wire fee
-                    });
-                }
-            }
-
-            // Corridors: Debt Settlement
-            for (const debt of allDebts) {
-                if (debt.status !== 'active') continue;
-
-                // Borrower -> Lender (Repayment)
-                edges.push({
-                    from: debt.borrowerVaultId,
-                    to: debt.lenderVaultId,
-                    efficiency: 1.0,
-                    type: 'debt_repayment',
-                    description: `Internal Debt Repayment (Principal Clearance)`,
-                    metadata: { debtId: debt.id }
-                });
-
-                // Lender -> Borrower (Forgiveness as Funding)
-                edges.push({
-                    from: debt.lenderVaultId,
-                    to: debt.borrowerVaultId,
-                    efficiency: 0.99, // Gift tax / documentation overhead
-                    type: 'debt_forgiveness',
-                    description: `Funding via Debt Forgiveness`,
-                    metadata: { debtId: debt.id }
-                });
-            }
-
-            // 3. Optimization Solve
-            const result = MILPSolver.solve(nodes, edges, sourceVaultId, destVaultId, amount);
-            if (!result) throw new Error('No viable liquidity path found.');
-
-            // 4. Audit Trail
-            const proposal = {
-                sourceVaultId,
-                destVaultId,
-                requestedAmount: amount,
-                estimatedArrivalAmount: result.estimatedArrival.toFixed(2),
-                totalEfficiency: (result.totalEfficiency * 100).toFixed(4) + '%',
-                path: result.path.map(p => ({
-                    step: p.description,
-                    type: p.type,
-                    efficiency: (p.efficiency * 100).toFixed(4) + '%',
-                    metadata: p.metadata
-                }))
-            };
-
-            await auditService.logRouteProposal(userId, proposal);
-
-            return proposal;
-
-        } catch (error) {
-            console.error('Optimal route calculation failed:', error);
-            throw error;
-        }
+        return platformFee + taxEffect + fxCost;
     }
-
-    /**
-     * Get graph topology for visualization
-     */
-    async getOptimalGraphTopology(userId) {
-        const userVaults = await db.select().from(vaults).where(eq(vaults.ownerId, userId));
-        const graph = new LiquidityGraph();
-
-        userVaults.forEach(v => graph.addNode(v.id));
-        // Add sample edges for topology (simplified)
-        for (const vFrom of userVaults) {
-            for (const vTo of userVaults) {
-                if (vFrom.id === vTo.id) continue;
-                graph.addEdge(vFrom.id, vTo.id, 0.99, 'direct_transfer');
-            }
-        }
-
-        return graph.getTopology();
-    }
-
-    // ... (suggestActions, analyzeCreditLines, etc. remain here but updated to use new tools if needed)
 }
 
 export default new LiquidityOptimizerService();

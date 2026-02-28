@@ -1,112 +1,102 @@
 import cron from 'node-cron';
 import db from '../config/db.js';
-import { securityEvents, ledgerEntries, auditAnchors } from '../db/schema.js';
-import { eq, and, sql, isNull, desc } from 'drizzle-orm';
-import { MerkleTree } from '../utils/merkleTree.js';
+import { securityEvents, auditLogs, auditAnchors } from '../db/schema.js';
+import { eq, and, gt, lt, desc } from 'drizzle-orm';
 import { logInfo, logError } from '../utils/logger.js';
+import MerkleTree from '../utils/merkleTree.js';
+import crypto from 'crypto';
 
 /**
- * AuditTrailSealer Job (#475)
- * Hourly background process to anchor high-stakes events in a Merkle Root.
+ * AuditTrailSealer (#475)
+ * Periodically aggregates security and audit events into a Merkle Tree.
  */
 class AuditTrailSealer {
-    constructor() {
-        this.isRunning = false;
-    }
-
     start() {
-        // Run every hour at the top of the hour
+        // Run every hour
         cron.schedule('0 * * * *', async () => {
-            await this.sealBatch();
+            await this.sealPeriodicAudit();
         });
-        logInfo('AuditTrailSealer Job scheduled (hourly)');
+        logInfo('AuditTrailSealer scheduled (hourly)');
     }
 
-    async sealBatch() {
-        if (this.isRunning) return;
-        this.isRunning = true;
-        logInfo('📝 Starting Hourly Audit Trail Sealing...');
+    async sealPeriodicAudit() {
+        logInfo('🧱 Starting hourly Audit Trail sealing...');
 
         try {
             const now = new Date();
-            const periodEnd = new Date(now);
-            periodEnd.setMinutes(0, 0, 0); // Seal up to the previous hour boundary
+            const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
-            const periodStart = new Date(periodEnd);
-            periodStart.setHours(periodStart.getHours() - 1);
-
-            // 1. Fetch unsealed high-stakes events
-            const [unsealedSecurity, unsealedLedger] = await Promise.all([
-                db.select().from(securityEvents).where(
-                    and(
-                        eq(securityEvents.isSealed, false),
-                        sql`${securityEvents.createdAt} < ${periodEnd}`
-                    )
-                ),
-                db.select().from(ledgerEntries).where(
-                    and(
-                        eq(ledgerEntries.isSealed, false),
-                        sql`${ledgerEntries.createdAt} < ${periodEnd}`
-                    )
-                )
+            // 1. Fetch high-stake events
+            const [securityData, auditData] = await Promise.all([
+                db.select().from(securityEvents)
+                    .where(and(
+                        gt(securityEvents.createdAt, oneHourAgo),
+                        lt(securityEvents.createdAt, now)
+                    )),
+                db.select().from(auditLogs)
+                    .where(and(
+                        gt(auditLogs.performedAt, oneHourAgo),
+                        lt(auditLogs.performedAt, now)
+                    ))
             ]);
 
+            // 2. Format into consistent leaves (Object-based)
             const allEvents = [
-                ...unsealedSecurity.map(e => ({ ...e, _sourceTable: 'security_events' })),
-                ...unsealedLedger.map(e => ({ ...e, _sourceTable: 'ledger_entries' }))
-            ].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+                ...securityData.map(e => ({
+                    id: e.id,
+                    type: 'security_event',
+                    actorId: e.userId,
+                    action: e.eventType,
+                    payload: e.details,
+                    timestamp: e.createdAt
+                })),
+                ...auditData.map(e => ({
+                    id: e.id,
+                    type: 'audit_log',
+                    actorId: e.userId,
+                    action: e.action,
+                    payload: e.delta,
+                    timestamp: e.performedAt
+                }))
+            ].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
             if (allEvents.length === 0) {
-                logInfo('No events to seal for this period.');
-                this.isRunning = false;
+                logInfo('[AuditTrailSealer] No events to seal in this period.');
                 return;
             }
 
-            // 2. Generate Merkle Tree
-            // Standardizing the leaf content for consistency
-            const leaves = allEvents.map(e => ({
-                id: e.id,
-                userId: e.userId,
-                createdAt: e.createdAt,
-                type: e._sourceTable,
-                data: e.details || e.description || {}
-            }));
-
-            const tree = new MerkleTree(leaves);
+            // 3. Build Merkle Tree
+            const tree = new MerkleTree(allEvents);
             const root = tree.getRoot();
 
-            // 3. Get Previous Anchor (Hash Chain)
-            const [lastAnchor] = await db.select().from(auditAnchors).orderBy(desc(auditAnchors.sealedAt)).limit(1);
+            // 4. Chain to previous anchor
+            const [lastAnchor] = await db.select()
+                .from(auditAnchors)
+                .orderBy(desc(auditAnchors.createdAt))
+                .limit(1);
 
-            // 4. Commit Anchor Record
-            const [newAnchor] = await db.insert(auditAnchors).values({
+            // 5. Publish Anchor
+            const [anchor] = await db.insert(auditAnchors).values({
                 merkleRoot: root,
-                previousAnchorId: lastAnchor?.id || null,
-                eventCount: allEvents.length,
-                periodStart,
-                periodEnd,
-                sealMetadata: {
-                    securityEventIds: unsealedSecurity.map(e => e.id),
-                    ledgerEntryIds: unsealedLedger.map(e => e.id)
-                }
+                previousAnchorHash: lastAnchor ? lastAnchor.merkleRoot : '0'.repeat(64),
+                startSlot: oneHourAgo,
+                endSlot: now,
+                eventCount: allEvents.length
             }).returning();
 
-            // 5. Update events as SEALED
-            await Promise.all([
-                db.update(securityEvents)
-                    .set({ isSealed: true, auditAnchorId: newAnchor.id })
-                    .where(isNull(securityEvents.auditAnchorId)),
-                db.update(ledgerEntries)
-                    .set({ isSealed: true, auditAnchorId: newAnchor.id })
-                    .where(isNull(ledgerEntries.auditAnchorId))
-            ]);
+            // 6. Mark events as sealed
+            await db.update(securityEvents)
+                .set({ isSealed: true, auditAnchorId: anchor.id })
+                .where(and(gt(securityEvents.createdAt, oneHourAgo), lt(securityEvents.createdAt, now)));
 
-            logInfo(`✅ Successfully sealed ${allEvents.length} events. Merkle Root: ${root.substring(0, 16)}...`);
+            await db.update(auditLogs)
+                .set({ isSealed: true, auditAnchorId: anchor.id })
+                .where(and(gt(auditLogs.performedAt, oneHourAgo), lt(auditLogs.performedAt, now)));
 
-        } catch (error) {
-            logError('AuditTrailSealer failed:', error);
-        } finally {
-            this.isRunning = false;
+            logInfo(`✅ Audit period sealed. Root: ${root.substring(0, 16)}... | Events: ${allEvents.length}`);
+
+        } catch (err) {
+            logError('Audit Sealing failed:', err);
         }
     }
 }

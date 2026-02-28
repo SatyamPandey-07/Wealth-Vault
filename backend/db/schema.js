@@ -1215,6 +1215,49 @@ export const washSaleViolations = pgTable('wash_sale_violations', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// ============================================================================
+// ALGORITHMIC MULTI-ENTITY TAX-LOSS HARVESTING (#482)
+// ============================================================================
+
+export const taxLots = pgTable('tax_lots', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    assetSymbol: text('asset_symbol').notNull(),
+    quantity: numeric('quantity', { precision: 20, scale: 8 }).notNull(),
+    purchasePrice: numeric('purchase_price', { precision: 20, scale: 2 }).notNull(),
+    purchaseDate: timestamp('purchase_date').notNull(),
+    isSold: boolean('is_sold').default(false),
+    soldDate: timestamp('sold_date'),
+    soldPrice: numeric('sold_price', { precision: 20, scale: 2 }),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const washSaleWindows = pgTable('wash_sale_windows', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    assetSymbol: text('asset_symbol').notNull(),
+    windowStart: timestamp('window_start').notNull(),
+    windowEnd: timestamp('window_end').notNull(),
+    restrictedVaultIds: jsonb('restricted_vault_ids').notNull(), // List of vaults where purchase is forbidden or flagged
+    reason: text('reason'), // e.g., "Harvest of Lot ID 123"
+    isActive: boolean('is_active').default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const harvestEvents = pgTable('harvest_events', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    assetSymbol: text('asset_symbol').notNull(),
+    totalLossHarvested: numeric('total_loss_harvested', { precision: 20, scale: 2 }).notNull(),
+    proxyAssetSuggested: text('proxy_asset_suggested'),
+    status: text('status').default('proposed'), // proposed, executed, completed
+    metadata: jsonb('metadata').default({}), // contains list of lot IDs harvested
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
 export const assetCorrelationMatrix = pgTable('asset_correlation_matrix', {
     id: uuid('id').defaultRandom().primaryKey(),
     baseAssetSymbol: text('base_asset_symbol').notNull(),
@@ -2259,6 +2302,8 @@ export const auditLogs = pgTable('audit_logs', {
     userAgent: text('user_agent'),
     sessionId: text('session_id'),
     requestId: text('request_id'),
+    isSealed: boolean('is_sealed').default(false),
+    auditAnchorId: uuid('audit_anchor_id').references(() => auditAnchors.id),
     performedAt: timestamp('performed_at').defaultNow(),
 }, (table) => ({
     userIdx: index('idx_audit_user').on(table.userId),
@@ -4599,5 +4644,101 @@ export const estateBrackets = pgTable('estate_brackets', {
     jurisdiction: text('jurisdiction').notNull(), // e.g. "US_FEDERAL", "STATE_NY"
     exemptionThreshold: numeric('exemption_threshold', { precision: 20, scale: 2 }).notNull(),
     taxRatePercentage: numeric('tax_rate_percentage', { precision: 5, scale: 2 }).notNull(),
+// SMART ESCROW & STOCHASTIC HEDGING SYSTEM (#481)
+// ============================================================================
+
+export const escrowContracts = pgTable('escrow_contracts', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    title: text('title').notNull(),
+    description: text('description'),
+    baseCurrency: text('base_currency').notNull(), // User's home currency (e.g., USD)
+    escrowCurrency: text('escrow_currency').notNull(), // Lock currency (e.g., EUR)
+    totalAmount: numeric('total_amount', { precision: 20, scale: 2 }).notNull(),
+    lockedAmount: numeric('locked_amount', { precision: 20, scale: 2 }).notNull(),
+    status: text('status').default('active'), // active, completed, defaulted, liquidated
+    vaultId: uuid('vault_id').references(() => vaults.id), // Where funds are backed
+    multiSigConfig: jsonb('multi_sig_config').notNull(), // Keys/Signers required
+    expiryDate: timestamp('expiry_date'),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const trancheReleases = pgTable('tranche_releases', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    contractId: uuid('contract_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+    milestoneName: text('milestone_name').notNull(),
+    amount: numeric('amount', { precision: 20, scale: 2 }).notNull(),
+    isReleased: boolean('is_released').default(false),
+    signaturesCollected: jsonb('signatures_collected').default([]),
+    releasedAt: timestamp('released_at'),
+});
+
+export const activeHedges = pgTable('active_hedges', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    contractId: uuid('contract_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+    hedgeType: text('hedge_type').notNull(), // FORWARD, SYNTH_STABLE, SWAP
+    notionalAmount: numeric('notional_amount', { precision: 20, scale: 2 }).notNull(),
+    entryRate: numeric('entry_rate', { precision: 12, scale: 6 }).notNull(),
+    currentValue: numeric('current_value', { precision: 20, scale: 2 }),
+    marginBuffer: numeric('margin_buffer', { precision: 20, scale: 2 }),
+    lastRevaluationAt: timestamp('last_revaluation_at').defaultNow(),
+});
+
+export const escrowAuditLogs = pgTable('escrow_audit_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    contractId: uuid('contract_id').references(() => escrowContracts.id, { onDelete: 'cascade' }).notNull(),
+    action: text('action').notNull(), // SIGNATURE_CAST, TRANCHE_RELEASE, HEDGE_ADJUST, MARGIN_CALL
+    actor: text('actor').notNull(),
+    details: jsonb('details'),
+    timestamp: timestamp('timestamp').defaultNow(),
+});
+// ============================================================================
+// MILP-BASED CROSS-BORDER LIQUIDITY OPTIMIZER (#476)
+// ============================================================================
+
+export const transferPaths = pgTable('transfer_paths', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    sourceVaultId: uuid('source_vault_id').references(() => vaults.id).notNull(),
+    destinationVaultId: uuid('destination_vault_id').references(() => vaults.id).notNull(),
+    baseFee: numeric('base_fee', { precision: 10, scale: 2 }).default('0'), // Transaction flat fee
+    platformFeePct: numeric('platform_fee_pct', { precision: 5, scale: 4 }).default('0'), // 0.001 = 0.1%
+    averageProcessingTimeDays: integer('avg_processing_time_days').default(1),
+    isInternational: boolean('is_international').default(false),
+    isActive: boolean('is_active').default(true),
+});
+
+export const entityTaxRules = pgTable('entity_tax_rules', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    sourceEntityId: uuid('source_entity_id').references(() => familyEntities.id).notNull(),
+    destinationEntityId: uuid('destination_entity_id').references(() => familyEntities.id).notNull(),
+    withholdingTaxPct: numeric('withholding_tax_pct', { precision: 5, scale: 4 }).default('0'),
+    regulatoryFilingRequired: boolean('regulatory_filing_required').default(false),
+});
+
+export const optimizationRuns = pgTable('optimization_runs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    targetAmountUSD: numeric('target_amount_usd', { precision: 20, scale: 2 }).notNull(),
+    destinationVaultId: uuid('destination_vault_id').references(() => vaults.id).notNull(),
+    optimalPath: jsonb('optimal_path').notNull(), // Array of steps
+    totalEstimatedFeeUSD: numeric('total_estimated_fee_usd', { precision: 15, scale: 2 }),
+    totalTaxImpactUSD: numeric('total_tax_impact_usd', { precision: 15, scale: 2 }),
+    status: text('status').default('calculated'), // calculated, executed, failed
+    createdAt: timestamp('created_at').defaultNow(),
+});
+// ============================================================================
+// CRYPTOGRAPHIC MERKLE AUDIT TRAIL (#475)
+// ============================================================================
+
+export const auditAnchors = pgTable('audit_anchors', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    merkleRoot: text('merkle_root').notNull(),
+    startSlot: timestamp('start_slot').notNull(),
+    endSlot: timestamp('end_slot').notNull(),
+    previousAnchorHash: text('previous_anchor_hash'), // For hash chaining anchors
+    eventCount: integer('event_count').default(0),
+    signature: text('signature'), // Optional: System signature of the root
     createdAt: timestamp('created_at').defaultNow(),
 });
