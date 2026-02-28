@@ -1026,6 +1026,183 @@ export const macroEconomicIndicators = pgTable('macro_economic_indicators', {
 });
 
 // ============================================================================
+// BAYESIAN PRIVATE DEBT DEFAULT PREDICTOR & YAR ENGINE (#496)
+// ============================================================================
+
+// Debt Bayesian Parameters - Store Bayesian inference parameters for private debt
+export const debtBayesianParams = pgTable('debt_bayesian_params', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    debtId: uuid('debt_id').references(() => debts.id, { onDelete: 'cascade' }).notNull(),
+    
+    // Bayesian Prior Parameters
+    priorAlpha: numeric('prior_alpha', { precision: 10, scale: 4 }).default('1.0'), // Beta distribution α for default prior
+    priorBeta: numeric('prior_beta', { precision: 10, scale: 4 }).default('99.0'), // Beta distribution β for default prior
+    
+    // Posterior Parameters (updated with evidence)
+    posteriorAlpha: numeric('posterior_alpha', { precision: 10, scale: 4 }).default('1.0'),
+    posteriorBeta: numeric('posterior_beta', { precision: 10, scale: 4 }).default('99.0'),
+    
+    // Current Probability Estimates
+    subjectiveProbabilityOfDefault: numeric('subjective_probability_of_default', { precision: 8, scale: 6 }).default('0.0100'), // 1% default
+    credibleInterval95Low: numeric('credible_interval_95_low', { precision: 8, scale: 6 }),
+    credibleInterval95High: numeric('credible_interval_95_high', { precision: 8, scale: 6 }),
+    
+    // Historical Evidence
+    onTimePayments: integer('on_time_payments').default(0),
+    latePayments: integer('late_payments').default(0),
+    missedPayments: integer('missed_payments').default(0),
+    
+    // Payment Velocity Metrics
+    avgPaymentVelocity: numeric('avg_payment_velocity', { precision: 5, scale: 2 }).default('1.00'), // 1.00 = on time, <1 = early, >1 = late
+    paymentVelocityStdDev: numeric('payment_velocity_std_dev', { precision: 5, scale: 2 }),
+    
+    // Borrower-Specific Risk Factors
+    borrowerCreditSpread: numeric('borrower_credit_spread', { precision: 8, scale: 4 }), // Spread over risk-free rate in basis points
+    borrowerLeverageRatio: numeric('borrower_leverage_ratio', { precision: 8, scale: 4 }), // Debt/EBITDA
+    borrowerInterestCoverageRatio: numeric('borrower_interest_coverage_ratio', { precision: 8, scale: 4 }), // EBITDA/Interest
+    
+    // Macro-Economic Sensitivity
+    baseRateSensitivity: numeric('base_rate_sensitivity', { precision: 5, scale: 4 }).default('0.10'), // % change in default prob per 1% rate change
+    gdpGrowthSensitivity: numeric('gdp_growth_sensitivity', { precision: 5, scale: 4 }).default('-0.05'), // Negative: higher GDP = lower default
+    
+    // Risk Classification
+    riskTier: text('risk_tier').default('investment_grade'), // 'investment_grade', 'high_yield', 'distressed', 'default'
+    confidenceScore: numeric('confidence_score', { precision: 3, scale: 2 }).default('0.50'), // 0-1, model confidence
+    
+    lastUpdated: timestamp('last_updated').defaultNow(),
+    lastPaymentDate: timestamp('last_payment_date'),
+    nextPaymentExpectedDate: timestamp('next_payment_expected_date'),
+    
+    metadata: jsonb('metadata').default({}), // Additional factors, notes, manual adjustments
+    createdAt: timestamp('created_at').defaultNow(),
+}, (table) => ({
+    userIdx: index('idx_bayesian_params_user').on(table.userId),
+    debtIdx: index('idx_bayesian_params_debt').on(table.debtId),
+    riskTierIdx: index('idx_bayesian_params_risk_tier').on(table.riskTier),
+    updatedIdx: index('idx_bayesian_params_updated').on(table.lastUpdated),
+}));
+
+// Loan Collateral Metadata - Track collateral backing private loans
+export const loanCollateralMetadata = pgTable('loan_collateral_metadata', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    debtId: uuid('debt_id').references(() => debts.id, { onDelete: 'cascade' }).notNull(),
+    
+    // Collateral Details
+    collateralType: text('collateral_type').notNull(), // 'real_estate', 'securities', 'cash', 'equipment', 'inventory', 'ip', 'receivables'
+    collateralDescription: text('collateral_description'),
+    
+    // Valuation
+    initialValue: numeric('initial_value', { precision: 18, scale: 2 }).notNull(),
+    currentValue: numeric('current_value', { precision: 18, scale: 2 }).notNull(),
+    currency: text('currency').default('USD'),
+    lastValuationDate: timestamp('last_valuation_date').defaultNow(),
+    valuationSource: text('valuation_source').default('appraisal'), // 'appraisal', 'market', 'self_reported', 'model'
+    
+    // Loan-to-Value Metrics
+    loanAmount: numeric('loan_amount', { precision: 18, scale: 2 }).notNull(),
+    currentLTV: numeric('current_ltv', { precision: 5, scale: 4 }).notNull(), // Loan / Current Value
+    initialLTV: numeric('initial_ltv', { precision: 5, scale: 4 }).notNull(),
+    maintenanceLTV: numeric('maintenance_ltv', { precision: 5, scale: 4 }).default('0.8000'), // Trigger for margin call
+    liquidationLTV: numeric('liquidation_ltv', { precision: 5, scale: 4 }).default('0.9000'), // Force liquidation threshold
+    
+    // Margin Call Tracking
+    marginCallRequired: boolean('margin_call_required').default(false),
+    marginCallDate: timestamp('margin_call_date'),
+    marginCallAmount: numeric('margin_call_amount', { precision: 18, scale: 2 }),
+    marginCallStatus: text('margin_call_status').default('none'), // 'none', 'pending', 'satisfied', 'defaulted'
+    marginCallDueDate: timestamp('margin_call_due_date'),
+    
+    // Collateral Quality Indicators
+    liquidityScore: numeric('liquidity_score', { precision: 3, scale: 2 }).default('0.50'), // 0-1, how quickly can be sold
+    volatilityScore: numeric('volatility_score', { precision: 3, scale: 2 }).default('0.50'), // 0-1, price stability
+    juniorLienExists: boolean('junior_lien_exists').default(false), // Is this first lien?
+    juniorLienAmount: numeric('junior_lien_amount', { precision: 18, scale: 2 }),
+    
+    // Insurance & Protection
+    isInsured: boolean('is_insured').default(false),
+    insuranceValue: numeric('insurance_value', { precision: 18, scale: 2 }),
+    insuranceExpiryDate: timestamp('insurance_expiry_date'),
+    
+    // Monitoring
+    revaluationFrequencyDays: integer('revaluation_frequency_days').default(90),
+    nextRevaluationDate: timestamp('next_revaluation_date'),
+    alertThreshold: numeric('alert_threshold', { precision: 5, scale: 4 }).default('0.7500'), // Alert if LTV exceeds this
+    
+    isActive: boolean('is_active').default(true),
+    metadata: jsonb('metadata').default({}), // Legal docs, custodian info, etc.
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+}, (table) => ({
+    userIdx: index('idx_collateral_user').on(table.userId),
+    debtIdx: index('idx_collateral_debt').on(table.debtId),
+    ltvIdx: index('idx_collateral_ltv').on(table.currentLTV),
+    marginCallIdx: index('idx_collateral_margin_call').on(table.marginCallRequired),
+    typeIdx: index('idx_collateral_type').on(table.collateralType),
+}));
+
+// Default Simulations - Monte Carlo simulation results for Yield-at-Risk
+export const defaultSimulations = pgTable('default_simulations', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    
+    // Simulation Configuration
+    simulationName: text('simulation_name').notNull(),
+    simulationType: text('simulation_type').default('portfolio_yar'), // 'portfolio_yar', 'single_loan', 'stress_test'
+    debtIds: jsonb('debt_ids').notNull(), // Array of debt IDs in portfolio
+    horizonMonths: integer('horizon_months').default(12), // Forecast horizon
+    iterationCount: integer('iteration_count').default(10000), // Monte Carlo iterations
+    
+    // Simulation Results - Yield-at-Risk (YaR)
+    expectedYield: numeric('expected_yield', { precision: 8, scale: 4 }), // Expected annual yield
+    yieldAtRisk99: numeric('yield_at_risk_99', { precision: 8, scale: 4 }), // 99% confidence interval loss
+    yieldAtRisk95: numeric('yield_at_risk_95', { precision: 8, scale: 4 }), // 95% confidence interval loss
+    yieldAtRisk90: numeric('yield_at_risk_90', { precision: 8, scale: 4 }), // 90% confidence interval loss
+    
+    // Portfolio-Wide Default Statistics
+    portfolioDefaultProbability: numeric('portfolio_default_prob', { precision: 8, scale: 6 }), // Aggregate default probability
+    expectedLoss: numeric('expected_loss', { precision: 18, scale: 2 }), // Dollar amount of expected loss
+    unexpectedLoss: numeric('unexpected_loss', { precision: 18, scale: 2 }), // Volatility of loss
+    
+    // Value-at-Risk Equivalents
+    var99: numeric('var_99', { precision: 18, scale: 2 }), // 99% VaR in dollar terms
+    var95: numeric('var_95', { precision: 18, scale: 2 }), // 95% VaR
+    cvar99: numeric('cvar_99', { precision: 18, scale: 2 }), // Conditional VaR (Expected Shortfall)
+    
+    // Distribution Metrics
+    lossDistributionMean: numeric('loss_distribution_mean', { precision: 18, scale: 2 }),
+    lossDistributionStdDev: numeric('loss_distribution_std_dev', { precision: 18, scale: 2 }),
+    lossDistributionSkewness: numeric('loss_distribution_skewness', { precision: 8, scale: 4 }),
+    lossDistributionKurtosis: numeric('loss_distribution_kurtosis', { precision: 8, scale: 4 }),
+    
+    // Scenario-Specific Results
+    macroScenario: text('macro_scenario').default('base_case'), // 'base_case', 'recession', 'boom', 'stress'
+    baseRateAssumption: numeric('base_rate_assumption', { precision: 5, scale: 4 }), // Fed Funds Rate assumption
+    gdpGrowthAssumption: numeric('gdp_growth_assumption', { precision: 5, scale: 4 }), // GDP growth assumption
+    creditSpreadAssumption: numeric('credit_spread_assumption', { precision: 5, scale: 4 }), // Credit spread assumption
+    
+    // Detailed Results Path Distribution
+    pathDistribution: jsonb('path_distribution').default([]), // Array of percentile results [{percentile: 1, yield: -0.05}, ...]
+    worstCaseScenarios: jsonb('worst_case_scenarios').default([]), // Top 10 worst simulation paths
+    
+    // Execution Details
+    executionTimeMs: integer('execution_time_ms'),
+    convergenceAchieved: boolean('convergence_achieved').default(true),
+    randomSeed: integer('random_seed'),
+    
+    status: text('status').default('completed'), // 'running', 'completed', 'failed'
+    createdAt: timestamp('created_at').defaultNow(),
+    completedAt: timestamp('completed_at'),
+    metadata: jsonb('metadata').default({}),
+}, (table) => ({
+    userIdx: index('idx_simulations_user').on(table.userId),
+    typeIdx: index('idx_simulations_type').on(table.simulationType),
+    statusIdx: index('idx_simulations_status').on(table.status),
+    createdIdx: index('idx_simulations_created').on(table.createdAt),
+}));
+
+// ============================================================================
 // DYNAMIC REBALANCING ORDERS & VAULT CONSOLIDATION (#449)
 // ============================================================================
 
