@@ -18,6 +18,7 @@ import {
   type LoginFormData,
   type RegisterFormData,
 } from "../../schemas/validationSchemas";
+import { ForgotPassword } from "./ForgotPassword";
 
 /**
  * Local Button component to resolve 'Cannot find name Button' error
@@ -80,6 +81,7 @@ export const AuthForm: React.FC<{ mode?: "login" | "register" }> = ({ mode = "lo
   const [authError, setAuthError] = useState("");
   const [mfaRequired, setMfaRequired] = useState(false);
   const [mfaToken, setMfaToken] = useState("");
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   // Login form
   const loginForm = useForm<LoginFormData>({
@@ -152,6 +154,15 @@ export const AuthForm: React.FC<{ mode?: "login" | "register" }> = ({ mode = "lo
 
   const toggleToSignUp = () => setIsSignUp(true);
   const toggleToLogin = () => setIsSignUp(false);
+
+  // Show forgot password form
+  if (showForgotPassword) {
+    return (
+      <ForgotPassword
+        onBackToLogin={() => setShowForgotPassword(false)}
+      />
+    );
+  }
 
   return (
     <>
@@ -278,7 +289,13 @@ export const AuthForm: React.FC<{ mode?: "login" | "register" }> = ({ mode = "lo
                         {mfaRequired ? 'Verify & Login' : 'Unlock Vault'}
                       </Button>
                     </form>
-                    <div className="text-center mt-6">
+                    <div className="text-center mt-4 space-y-2">
+                      <button
+                        onClick={() => setShowForgotPassword(true)}
+                        className="text-sm text-primary hover:text-primary-dark font-medium hover:underline"
+                      >
+                        Forgot Password?
+                      </button>
                       <p className="text-sm text-gray-600">Don't have an account? <button onClick={toggleToSignUp} className="text-primary font-bold hover:underline">Sign Up</button></p>
                     </div>
                   </div>

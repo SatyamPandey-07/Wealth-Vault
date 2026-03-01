@@ -895,6 +895,24 @@ export const tokenBlacklist = pgTable('token_blacklist', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Password Reset Tokens Table
+export const passwordResetTokens = pgTable('password_reset_tokens', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    token: text('token').notNull().unique(),
+    hashedToken: text('hashed_token').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    used: boolean('used').default(false),
+    createdAt: timestamp('created_at').defaultNow(),
+    usedAt: timestamp('used_at'),
+}, (table) => {
+    return {
+        userIdIdx: index('idx_password_reset_tokens_user_id').on(table.userId),
+        tokenIdx: index('idx_password_reset_tokens_token').on(table.token),
+        expiresAtIdx: index('idx_password_reset_tokens_expires_at').on(table.expiresAt),
+    };
+});
+
 export const reports = pgTable('reports', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
