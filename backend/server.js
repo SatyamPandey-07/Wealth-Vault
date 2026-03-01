@@ -38,6 +38,7 @@ import geminiRouter from "./routes/gemini.js";
 import analyticsRoutes from "./routes/analytics.js";
 import healthRoutes from "./routes/health.js";
 import performanceRoutes from "./routes/performance.js";
+import budgetAlertsRoutes from "./routes/budgetAlerts.js";
 
 // Load environment variables
 dotenv.config();
@@ -204,6 +205,7 @@ app.use("/api/interlock", userLimiter, interlockRoutes);
 app.use("/api", presenceTracker);
 app.use("/api/vaults", userLimiter, vaultRoutes);
 app.use("/api/budgets", userLimiter, budgetRoutes);
+app.use("/api/budget-alerts", userLimiter, budgetAlertsRoutes);
 app.use("/api/expense-shares", userLimiter, expenseSharesRoutes);
 app.use("/api/reimbursements", userLimiter, reimbursementsRoutes);
 app.use("/api/interlock", userLimiter, interlockRoutes);
