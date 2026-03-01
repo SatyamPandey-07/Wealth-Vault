@@ -1,6 +1,7 @@
 import outboxService from '../services/outboxService.js';
 import logger from '../utils/logger.js';
 import EventEmitter from 'events';
+import ConcurrencyLimiter from '../utils/ConcurrencyLimiter.js';
 
 /**
  * Outbox Dispatcher - Background job for processing and publishing outbox events
@@ -19,6 +20,14 @@ class OutboxDispatcher extends EventEmitter {
         this.pollInterval = process.env.OUTBOX_POLL_INTERVAL || 5000; // 5 seconds default
         this.batchSize = process.env.OUTBOX_BATCH_SIZE || 50;
         this.eventHandlers = new Map();
+        
+        // Initialize concurrency limiter with proper promise management
+        this.concurrencyLimiter = new ConcurrencyLimiter(10); // Max 10 concurrent event processors
+        
+        // Memory monitoring thresholds
+        this.memoryCheckInterval = 10000; // Every 10 seconds
+        this.maxHeapUsagePercent = 90; // Alert if heap > 90%
+        this.memoryCheckId = null;
     }
 
     /**
@@ -71,12 +80,16 @@ class OutboxDispatcher extends EventEmitter {
         this.isRunning = true;
         logger.info('Starting outbox dispatcher', {
             pollInterval: this.pollInterval,
-            batchSize: this.batchSize
+            batchSize: this.batchSize,
+            concurrencyLimit: this.concurrencyLimiter.concurrency
         });
 
         // Start polling loop
         this.poll();
         this.intervalId = setInterval(() => this.poll(), this.pollInterval);
+
+        // Start memory monitoring
+        this._startMemoryMonitoring();
 
         logger.info('Outbox dispatcher started');
     }
@@ -84,7 +97,7 @@ class OutboxDispatcher extends EventEmitter {
     /**
      * Stop the dispatcher
      */
-    stop() {
+    async stop() {
         if (!this.isRunning) {
             logger.warn('Outbox dispatcher is not running');
             return;
@@ -96,6 +109,16 @@ class OutboxDispatcher extends EventEmitter {
             clearInterval(this.intervalId);
             this.intervalId = null;
         }
+
+        // Stop memory monitoring
+        if (this.memoryCheckId) {
+            clearInterval(this.memoryCheckId);
+            this.memoryCheckId = null;
+        }
+
+        // Drain remaining promises gracefully
+        logger.info('Draining remaining events before shutdown...');
+        await this.concurrencyLimiter.drain();
 
         logger.info('Outbox dispatcher stopped');
     }
@@ -132,28 +155,56 @@ class OutboxDispatcher extends EventEmitter {
     }
 
     /**
-     * Process events in parallel with concurrency control
+     * Process events in parallel with proper concurrency control
+     * Uses semaphore pattern to prevent memory leaks and ensure proper promise cleanup
+     * 
      * @param {Array<Object>} events - Events to process
-     * @param {number} concurrency - Maximum concurrent processing
+     * @param {number} concurrency - Maximum concurrent processing (not used, limiter is pre-initialized)
      * @private
      */
     async processEventsInParallel(events, concurrency) {
-        const processing = [];
+        const startTime = Date.now();
+        const eventCount = events.length;
         
-        for (const event of events) {
-            const promise = this.processEvent(event);
-            processing.push(promise);
+        logger.debug('Starting parallel event processing', {
+            eventCount,
+            concurrencyLimit: this.concurrencyLimiter.concurrency
+        });
 
-            // Wait if we've reached concurrency limit
-            if (processing.length >= concurrency) {
-                await Promise.race(processing);
-                // Remove completed promises
-                processing.splice(0, processing.findIndex(p => p.settled) + 1);
-            }
+        // Use the concurrency limiter to safely process events
+        const results = await this.concurrencyLimiter.runAllSettled(
+            events,
+            (event) => this.processEvent(event)
+        );
+
+        // Log processing statistics
+        const duration = Date.now() - startTime;
+        const succeeded = results.filter(r => r.status === 'fulfilled').length;
+        const failed = results.filter(r => r.status === 'rejected').length;
+
+        logger.info('Event batch processing completed', {
+            totalEvents: eventCount,
+            succeeded,
+            failed,
+            duration: `${duration}ms`,
+            throughput: `${(eventCount / (duration / 1000)).toFixed(2)} events/sec`,
+            ...this.concurrencyLimiter.getMemoryStats()
+        });
+
+        // Check for circuit breaker state
+        if (this.concurrencyLimiter.isBroken) {
+            logger.error('Circuit breaker opened due to high failure rate', {
+                failureRate: `${(this.concurrencyLimiter.getMemoryStats().failureRate * 100).toFixed(2)}%`,
+                totalProcessed: this.concurrencyLimiter.totalProcessed,
+                totalFailed: this.concurrencyLimiter.totalFailed
+            });
+            
+            // Emit circuit breaker alert
+            this.emit('circuit-breaker:opened', {
+                failureRate: this.concurrencyLimiter.getMemoryStats().failureRate,
+                totalFailed: this.concurrencyLimiter.totalFailed
+            });
         }
-
-        // Wait for remaining events
-        await Promise.allSettled(processing);
     }
 
     /**
@@ -262,8 +313,57 @@ class OutboxDispatcher extends EventEmitter {
             pollInterval: this.pollInterval,
             batchSize: this.batchSize,
             registeredHandlers: Array.from(this.eventHandlers.keys()),
-            handlerCount: Array.from(this.eventHandlers.values()).reduce((sum, arr) => sum + arr.length, 0)
+            handlerCount: Array.from(this.eventHandlers.values()).reduce((sum, arr) => sum + arr.length, 0),
+            concurrencyStats: this.concurrencyLimiter.getMemoryStats()
         };
+    }
+
+    /**
+     * Start monitoring memory usage and emit alerts if thresholds exceeded
+     * @private
+     */
+    _startMemoryMonitoring() {
+        this.memoryCheckId = setInterval(() => {
+            try {
+                const memUsage = process.memoryUsage();
+                const heapUsedPercent = (memUsage.heapUsed / memUsage.heapTotal) * 100;
+                const stats = this.concurrencyLimiter.getMemoryStats();
+
+                // Log memory stats every check
+                logger.debug('Memory and concurrency stats', {
+                    heapUsed: stats.heapUsed,
+                    heapTotal: stats.heapTotal,
+                    heapUsedPercent: `${heapUsedPercent.toFixed(2)}%`,
+                    activePromises: stats.activePromises,
+                    queuedPromises: stats.queuedPromises,
+                    failureRate: `${(stats.failureRate * 100).toFixed(2)}%`
+                });
+
+                // Alert if heap usage is high
+                if (heapUsedPercent > this.maxHeapUsagePercent) {
+                    logger.warn('High memory usage detected', {
+                        heapUsedPercent: `${heapUsedPercent.toFixed(2)}%`,
+                        heapUsed: stats.heapUsed,
+                        heapTotal: stats.heapTotal,
+                        activePromises: stats.activePromises,
+                        queuedPromises: stats.queuedPromises
+                    });
+
+                    this.emit('memory:high', {
+                        heapUsedPercent,
+                        ...stats
+                    });
+
+                    // Force garbage collection hint if available
+                    if (global.gc) {
+                        logger.info('Triggering garbage collection');
+                        global.gc();
+                    }
+                }
+            } catch (error) {
+                logger.error('Error in memory monitoring', { error: error.message });
+            }
+        }, this.memoryCheckInterval);
     }
 }
 
