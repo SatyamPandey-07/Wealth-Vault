@@ -48,6 +48,7 @@ import auditRoutes from "./routes/audit.js";
 import securityRoutes from "./routes/security.js";
 import subscriptionRoutes from "./routes/subscriptions.js";
 import assetRoutes from "./routes/assets.js";
+import notificationRoutes from "./routes/notifications.js";
 import governanceRoutes from "./routes/governance.js";
 import taxRoutes from "./routes/tax.js";
 import debtRoutes from "./routes/debts.js";
@@ -364,6 +365,7 @@ const startServer = async () => {
     app.use("/api/audit", userLimiter, auditRoutes);
     app.use("/api/db-router", userLimiter, dbRouterRoutes);
     app.use("/api/authorization", userLimiter, authorizationRoutes);
+    app.use("/api/notifications", userLimiter, notificationRoutes);
 
     // Secur fil servr for uploddd fils
     app.use("/uploads", createFileServerRoute());
