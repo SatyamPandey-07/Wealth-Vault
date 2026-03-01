@@ -22,6 +22,10 @@ const DEFAULT_PERMISSION_DEFINITIONS = [
   { key: 'rbac:role:manage', description: 'Manage RBAC roles' },
   { key: 'rbac:permission:manage', description: 'Manage RBAC permissions' },
   { key: 'rbac:assign', description: 'Assign RBAC roles to members' },
+  { key: 'audit:view', description: 'View audit logs' },
+  { key: 'audit:export', description: 'Export audit logs' },
+  { key: 'audit:alert:view', description: 'View security alerts' },
+  { key: 'audit:integrity:verify', description: 'Verify audit log integrity' },
   { key: 'expense:view', description: 'View expenses' },
   { key: 'expense:create', description: 'Create expenses' },
   { key: 'expense:update', description: 'Update expenses' },
@@ -60,7 +64,9 @@ const DEFAULT_ROLE_MODEL = [
     permissions: [
       'member:view',
       'expense:update',
-      'category:manage'
+      'category:manage',
+      'audit:view',
+      'audit:alert:view'
     ]
   },
   {
@@ -76,7 +82,9 @@ const DEFAULT_ROLE_MODEL = [
       'rbac:role:manage',
       'rbac:permission:manage',
       'rbac:assign',
-      'expense:delete'
+      'expense:delete',
+      'audit:export',
+      'audit:integrity:verify'
     ]
   },
   {
