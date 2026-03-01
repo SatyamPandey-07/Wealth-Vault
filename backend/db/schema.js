@@ -4910,3 +4910,80 @@ export const auditAnchors = pgTable('audit_anchors', {
     signature: text('signature'), // Optional: System signature of the root
     createdAt: timestamp('created_at').defaultNow(),
 });
+
+// ============================================================================
+// ASYMMETRIC SPV PARTNERSHIP & LP/GP WATERFALL DISTRIBUTION ENGINE (#510)
+// ============================================================================
+
+export const spvEntities = pgTable('spv_entities', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    gpEntityId: uuid('gp_entity_id').references(() => entities.id), // The entity managing the SPV
+    status: text('status').default('active'), // 'active', 'liquidating', 'closed'
+    initialAssetValue: numeric('initial_asset_value', { precision: 20, scale: 2 }),
+    totalCommittedCapital: numeric('total_committed_capital', { precision: 20, scale: 2 }).default('0'),
+    totalCalledCapital: numeric('total_called_capital', { precision: 20, scale: 2 }).default('0'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const lpCommitments = pgTable('lp_commitments', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    spvId: uuid('spv_id').references(() => spvEntities.id, { onDelete: 'cascade' }).notNull(),
+    lpEntityId: uuid('lp_entity_id').references(() => entities.id).notNull(), // Target entity for the commitment
+    committedAmount: numeric('committed_amount', { precision: 20, scale: 2 }).notNull(),
+    calledAmount: numeric('called_amount', { precision: 20, scale: 2 }).default('0'),
+    ownershipPrc: numeric('ownership_prc', { precision: 7, scale: 4 }).notNull(), // Percentage of capital stake
+    status: text('status').default('active'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const waterfallTiers = pgTable('waterfall_tiers', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    spvId: uuid('spv_id').references(() => spvEntities.id, { onDelete: 'cascade' }).notNull(),
+    tierOrder: integer('tier_order').notNull(), // 1, 2, 3...
+    name: text('name').notNull(), // e.g. '8% Preferred Return'
+    allocationType: text('allocation_type').notNull(), // 'hurdle', 'catch_up', 'carried_interest'
+    thresholdIrr: numeric('threshold_irr', { precision: 5, scale: 4 }), // Hurdle rate (e.g. 0.08)
+    lpSplit: numeric('lp_split', { precision: 5, scale: 4 }).notNull(), // Percentage to LPs (e.g. 1.0 for preferred)
+    gpSplit: numeric('gp_split', { precision: 5, scale: 4 }).notNull(), // Percentage to GPs (e.g. 0.0)
+    metadata: jsonb('metadata').default({}),
+});
+
+export const capitalCalls = pgTable('capital_calls', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    spvId: uuid('spv_id').references(() => spvEntities.id, { onDelete: 'cascade' }).notNull(),
+    callAmount: numeric('call_amount', { precision: 20, scale: 2 }).notNull(),
+    callDate: timestamp('call_date').defaultNow(),
+    dueDate: timestamp('due_date'),
+    status: text('status').default('open'), // 'open', 'completed', 'overdue'
+    description: text('description'),
+    metadata: jsonb('metadata').default({}),
+});
+
+// SPV Relations
+export const spvEntitiesRelations = relations(spvEntities, ({ one, many }) => ({
+    user: one(users, { fields: [spvEntities.userId], references: [users.id] }),
+    gpEntity: one(entities, { fields: [spvEntities.gpEntityId], references: [entities.id] }),
+    commitments: many(lpCommitments),
+    tiers: many(waterfallTiers),
+    calls: many(capitalCalls),
+}));
+
+export const lpCommitmentsRelations = relations(lpCommitments, ({ one }) => ({
+    spv: one(spvEntities, { fields: [lpCommitments.spvId], references: [spvEntities.id] }),
+    lpEntity: one(entities, { fields: [lpCommitments.lpEntityId], references: [entities.id] }),
+}));
+
+export const waterfallTiersRelations = relations(waterfallTiers, ({ one }) => ({
+    spv: one(spvEntities, { fields: [waterfallTiers.spvId], references: [spvEntities.id] }),
+}));
+
+export const capitalCallsRelations = relations(capitalCalls, ({ one }) => ({
+    spv: one(spvEntities, { fields: [capitalCalls.spvId], references: [spvEntities.id] }),
+}));
