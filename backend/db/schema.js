@@ -3319,15 +3319,6 @@ export const taxLotsRelations = relations(taxLots, ({ one }) => ({
     investment: one(investments, { fields: [taxLots.investmentId], references: [investments.id] }),
 }));
 
-export const harvestOpportunitiesRelations = relations(harvestOpportunities, ({ one }) => ({
-    user: one(users, { fields: [harvestOpportunities.userId], references: [users.id] }),
-    investment: one(investments, { fields: [harvestOpportunities.investmentId], references: [investments.id] }),
-}));
-
-export const washSaleLogsRelations = relations(washSaleLogs, ({ one }) => ({
-    user: one(users, { fields: [washSaleLogs.userId], references: [users.id] }),
-    investment: one(investments, { fields: [washSaleLogs.investmentId], references: [investments.id] }),
-}));
 
 // ============================================================================
 // INTELLIGENT ANOMALY DETECTION & RISK SCORING (L3) (#372)
@@ -4615,16 +4606,6 @@ export const portfolioRebalancingRelations = relations(portfolioRebalancing, ({ 
     }),
 }));
 
-export const harvestOpportunitiesRelations = relations(harvestOpportunities, ({ one }) => ({
-    user: one(users, { fields: [harvestOpportunities.userId], references: [users.id] }),
-    investment: one(investments, { fields: [harvestOpportunities.investmentId], references: [investments.id] }),
-}));
-
-export const washSaleLogsRelations = relations(washSaleLogs, ({ one }) => ({
-    user: one(users, { fields: [washSaleLogs.userId], references: [users.id] }),
-    investment: one(investments, { fields: [washSaleLogs.investmentId], references: [investments.id] }),
-    replacementLot: one(taxLots, { fields: [washSaleLogs.replacementLotId], references: [taxLots.id] }),
-}));
 
 // Update users relations to include new tables - DELETED DUPLICATE
 
@@ -4896,20 +4877,6 @@ export const optimizationRuns = pgTable('optimization_runs', {
     status: text('status').default('calculated'), // calculated, executed, failed
     createdAt: timestamp('created_at').defaultNow(),
 });
-// ============================================================================
-// CRYPTOGRAPHIC MERKLE AUDIT TRAIL (#475)
-// ============================================================================
-
-export const auditAnchors = pgTable('audit_anchors', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    merkleRoot: text('merkle_root').notNull(),
-    startSlot: timestamp('start_slot').notNull(),
-    endSlot: timestamp('end_slot').notNull(),
-    previousAnchorHash: text('previous_anchor_hash'), // For hash chaining anchors
-    eventCount: integer('event_count').default(0),
-    signature: text('signature'), // Optional: System signature of the root
-    createdAt: timestamp('created_at').defaultNow(),
-});
 
 // ============================================================================
 // ASYMMETRIC SPV PARTNERSHIP & LP/GP WATERFALL DISTRIBUTION ENGINE (#510)
@@ -4986,4 +4953,68 @@ export const waterfallTiersRelations = relations(waterfallTiers, ({ one }) => ({
 
 export const capitalCallsRelations = relations(capitalCalls, ({ one }) => ({
     spv: one(spvEntities, { fields: [capitalCalls.spvId], references: [spvEntities.id] }),
+}));
+
+// ============================================================================
+// ALGORITHMIC OPTIONS COLLAR & DERIVATIVES ENGINE (#509)
+// ============================================================================
+
+export const optionsPositions = pgTable('options_positions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    investmentId: uuid('investment_id').references(() => investments.id).notNull(), // Underlying asset
+    vaultId: uuid('vault_id').references(() => vaults.id).notNull(), // Vault holding the collateral
+    type: text('type').notNull(), // 'call', 'put'
+    optionStyle: text('option_style').default('american'), // 'american', 'european'
+    strikePrice: numeric('strike_price', { precision: 20, scale: 2 }).notNull(),
+    expirationDate: timestamp('expiration_date').notNull(),
+    contractsCount: numeric('contracts_count', { precision: 20, scale: 4 }).notNull(), // 1 contract usually = 100 shares
+    premiumPerUnit: numeric('premium_per_unit', { precision: 10, scale: 4 }),
+    status: text('status').default('open'), // 'open', 'closed', 'expired', 'assigned'
+    strategyId: uuid('strategy_id'), // Link to a grouped strategy like a Collar
+    isCovered: boolean('is_covered').default(true),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const strategyLegs = pgTable('strategy_legs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    strategyName: text('strategy_name').notNull(), // e.g. 'Zero-Cost Collar', 'Covered Call'
+    strategyType: text('strategy_type').notNull(),
+    underlyingInvestmentId: uuid('underlying_investment_id').references(() => investments.id).notNull(),
+    status: text('status').default('active'),
+    netPremium: numeric('net_premium', { precision: 20, scale: 2 }), // Total cost/credit to set up
+    targetDelta: numeric('target_delta', { precision: 5, scale: 4 }), // e.g. 0.3 for a standard protective put
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const impliedVolSurfaces = pgTable('implied_vol_surfaces', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    investmentId: uuid('investment_id').references(() => investments.id).notNull(),
+    observationDate: timestamp('observation_date').defaultNow(),
+    impliedVol: numeric('implied_vol', { precision: 10, scale: 6 }), // Decimal percentage
+    tenorDays: integer('tenor_days'), // e.g. 30, 60, 90
+    moneyness: numeric('moneyness', { precision: 5, scale: 2 }), // e.g. 1.0 (ATM), 1.1 (OTM)
+    source: text('source').default('market_oracle'),
+});
+
+// Derivatives Relations
+export const optionsPositionsRelations = relations(optionsPositions, ({ one }) => ({
+    user: one(users, { fields: [optionsPositions.userId], references: [users.id] }),
+    investment: one(investments, { fields: [optionsPositions.investmentId], references: [investments.id] }),
+    vault: one(vaults, { fields: [optionsPositions.vaultId], references: [vaults.id] }),
+    strategy: one(strategyLegs, { fields: [optionsPositions.strategyId], references: [strategyLegs.id] }),
+}));
+
+export const strategyLegsRelations = relations(strategyLegs, ({ one, many }) => ({
+    user: one(users, { fields: [strategyLegs.userId], references: [users.id] }),
+    underlying: one(investments, { fields: [strategyLegs.underlyingInvestmentId], references: [investments.id] }),
+    legs: many(optionsPositions),
+}));
+
+export const impliedVolSurfacesRelations = relations(impliedVolSurfaces, ({ one }) => ({
+    investment: one(investments, { fields: [impliedVolSurfaces.investmentId], references: [investments.id] }),
 }));
