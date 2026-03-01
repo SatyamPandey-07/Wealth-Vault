@@ -13,6 +13,8 @@ import { connectRedis } from "./config/redis.js";
 import { scheduleCleanup } from "./jobs/tokenCleanup.js";
 import { scheduleRatesSync, runImmediateSync } from "./jobs/syncRates.js";
 import { initializeUploads } from "./middleware/fileUpload.js";
+import outboxDispatcher from "./jobs/outboxDispatcher.js";
+import "./services/sagaDefinitions.js"; // Register saga definitions
 import { createFileServerRoute } from "./middleware/secureFileServer.js";
 import {
   generalLimiter,
@@ -53,18 +55,9 @@ connectRedis().catch((err) => {
 // Schedule token cleanup job
 scheduleCleanup();
 
-// Schedule exchange rates sync job
-scheduleRatesSync();
-
-// Run initial exchange rates sync
-runImmediateSync().then(() => {
-  console.log('✅ Initial exchange rates sync completed');
-}).catch(err => {
-  console.warn('⚠️ Initial exchange rates sync failed:', err.message);
-});
-
-// Schedule weekly habit digest job
-scheduleWeeklyHabitDigest();
+// Start outbox event dispatcher
+outboxDispatcher.start();
+console.log('📤 Outbox dispatcher started');
 
 // Initiliz uplod directorys
 initializeUploads().catch((err) => {
