@@ -12,8 +12,32 @@ import { eq, and, or, inArray } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import db from '../config/db.js';
-import { tenants, tenantMembers, users } from '../db/schema.js';
+import { tenants, tenantMembers, users, rbacRoles } from '../db/schema.js';
+import { initializeTenantRbac, assignRolesToMember } from './rbacService.js';
 import { logger } from '../utils/logger.js';
+
+const syncMemberRbacRole = async (tenantId, tenantMemberId, roleSlug, actorUserId) => {
+  const [rbacRole] = await db
+    .select({ id: rbacRoles.id })
+    .from(rbacRoles)
+    .where(
+      and(
+        eq(rbacRoles.tenantId, tenantId),
+        eq(rbacRoles.slug, roleSlug)
+      )
+    );
+
+  if (!rbacRole) {
+    return;
+  }
+
+  await assignRolesToMember({
+    tenantId,
+    tenantMemberId,
+    roleIds: [rbacRole.id],
+    actorUserId
+  });
+};
 
 /**
  * Create a new tenant
@@ -78,6 +102,18 @@ export const createTenant = async (data) => {
         role: 'owner',
         status: 'active'
       });
+
+    const [ownerMembership] = await db
+      .select({ id: tenantMembers.id })
+      .from(tenantMembers)
+      .where(
+        and(
+          eq(tenantMembers.tenantId, tenantId),
+          eq(tenantMembers.userId, ownerId)
+        )
+      );
+
+    await initializeTenantRbac(tenantId, ownerId, ownerMembership?.id || null);
 
     logger.info(`Tenant created: ${newTenant.name} (${tenantId})`, {
       tenantId,
@@ -215,6 +251,10 @@ export const addTenantMember = async (tenantId, userId, role = 'member') => {
         .where(eq(tenantMembers.id, existing.id))
         .returning();
 
+      await initializeTenantRbac(tenantId, userId, existing.id);
+
+      await syncMemberRbacRole(tenantId, existing.id, role, userId);
+
       logger.info(`Tenant member reactivated`, {
         tenantId,
         userId,
@@ -233,6 +273,10 @@ export const addTenantMember = async (tenantId, userId, role = 'member') => {
           status: 'active'
         })
         .returning();
+
+      await initializeTenantRbac(tenantId, userId, newMember.id);
+
+      await syncMemberRbacRole(tenantId, newMember.id, role, userId);
 
       logger.info(`Tenant member added`, {
         tenantId,
@@ -325,6 +369,12 @@ export const updateMemberRole = async (tenantId, userId, newRole) => {
         )
       )
       .returning();
+
+    if (updated) {
+      await initializeTenantRbac(tenantId, userId, updated.id);
+
+      await syncMemberRbacRole(tenantId, updated.id, newRole, userId);
+    }
 
     logger.info(`Member role updated`, {
       tenantId,
