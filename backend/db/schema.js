@@ -183,6 +183,7 @@ export const categories = pgTable('categories', {
     budget: jsonb('budget').default({ monthly: 0, yearly: 0 }),
     spendingLimit: numeric('spending_limit', { precision: 12, scale: 2 }).default('0'),
     priority: integer('priority').default(0),
+    version: integer('version').default(1).notNull(), // Optimistic locking version
     metadata: jsonb('metadata').default({
         usageCount: 0,
         lastUsed: null,
@@ -438,6 +439,76 @@ export const serviceAuthLogs = pgTable('service_auth_logs', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Budget Alerts Table - Track budget alert thresholds and configurations
+export const budgetAlerts = pgTable('budget_alerts', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }).notNull(),
+    alertType: text('alert_type').notNull(), // 'threshold', 'daily_limit', 'weekly_limit', 'monthly_budget'
+    threshold: numeric('threshold', { precision: 12, scale: 2 }).notNull(), // Alert triggers at this amount
+    thresholdPercentage: numeric('threshold_percentage', { precision: 5, scale: 2 }).default('80'), // Or percentage of budget
+    scope: text('scope').default('monthly'), // 'daily', 'weekly', 'monthly', 'yearly'
+    isActive: boolean('is_active').default(true),
+    notificationChannels: jsonb('notification_channels').default(['email', 'in-app']), // Channels to notify
+    metadata: jsonb('metadata').default({
+        lastTriggeredAt: null,
+        triggerCount: 0,
+        createdReason: 'user_configured'
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Budget Aggregates Table - Materialized view data with version control for race condition prevention
+export const budgetAggregates = pgTable('budget_aggregates', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }).notNull(),
+    period: text('period').notNull(), // 'daily', 'weekly', 'monthly', 'yearly'
+    periodStart: timestamp('period_start').notNull(),
+    periodEnd: timestamp('period_end').notNull(),
+    totalSpent: numeric('total_spent', { precision: 12, scale: 2 }).default('0').notNull(),
+    totalCount: integer('total_count').default(0).notNull(),
+    averageTransaction: numeric('average_transaction', { precision: 12, scale: 2 }).default('0'),
+    maxTransaction: numeric('max_transaction', { precision: 12, scale: 2 }).default('0'),
+    minTransaction: numeric('min_transaction', { precision: 12, scale: 2 }).default('0'),
+    version: integer('version').default(1).notNull(), // Optimistic locking version
+    // Isolation level and consistency tracking
+    isolationLevel: text('isolation_level').default('read_committed'), // read_committed, serializable
+    computedAt: timestamp('computed_at').defaultNow(),
+    refreshedAt: timestamp('refreshed_at'),
+    nextRefreshAt: timestamp('next_refresh_at'),
+    isStale: boolean('is_stale').default(false),
+    metadata: jsonb('metadata').default({
+        sourceCount: 0,
+        lastEventId: null
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Alert Deduplication Table - Prevent duplicate alert firings using event-driven deduplication
+export const alertDeduplication = pgTable('alert_deduplication', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    budgetAlertId: uuid('budget_alert_id').references(() => budgetAlerts.id, { onDelete: 'cascade' }).notNull(),
+    deduplicationKey: text('deduplication_key').notNull(), // hash of alert trigger conditions
+    lastFiredAt: timestamp('last_fired_at'),
+    fireCount: integer('fire_count').default(0),
+    isActive: boolean('is_active').default(true),
+    // TTL for deduplication window - prevents duplicate alerts within certain timeframe
+    deduplicationWindowMs: integer('deduplication_window_ms').default(3600000), // 1 hour default
+    expiresAt: timestamp('expires_at').notNull(), // When this deduplication entry expires
+    metadata: jsonb('metadata').default({
+        reason: null,
+        suppressedCount: 0
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
     ownedTenants: many(tenants),
@@ -448,6 +519,8 @@ export const usersRelations = relations(users, ({ many }) => ({
     deviceSessions: many(deviceSessions),
     rbacAuditLogs: many(rbacAuditLogs),
     auditLogs: many(auditLogs),
+    budgetAlerts: many(budgetAlerts),
+    budgetAggregates: many(budgetAggregates),
 }));
 
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -463,6 +536,9 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
     rbacPermissions: many(rbacPermissions),
     rbacAuditLogs: many(rbacAuditLogs),
     auditLogs: many(auditLogs),
+    budgetAlerts: many(budgetAlerts),
+    budgetAggregates: many(budgetAggregates),
+    alertDeduplication: many(alertDeduplication),
 }));
 
 export const tenantMembersRelations = relations(tenantMembers, ({ one, many }) => ({
@@ -565,6 +641,8 @@ export const categoriesRelations = relations(categories, ({ one, many }) => ({
     }),
     expenses: many(expenses),
     goals: many(goals),
+    budgetAlerts: many(budgetAlerts),
+    budgetAggregates: many(budgetAggregates),
 }));
 
 export const expensesRelations = relations(expenses, ({ one }) => ({
@@ -675,5 +753,47 @@ export const serviceAuthLogsRelations = relations(serviceAuthLogs, ({ one }) => 
     service: one(serviceIdentities, {
         fields: [serviceAuthLogs.serviceId],
         references: [serviceIdentities.id],
+    }),
+}));
+
+export const budgetAlertsRelations = relations(budgetAlerts, ({ one, many }) => ({
+    tenant: one(tenants, {
+        fields: [budgetAlerts.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [budgetAlerts.userId],
+        references: [users.id],
+    }),
+    category: one(categories, {
+        fields: [budgetAlerts.categoryId],
+        references: [categories.id],
+    }),
+    deduplicationEntries: many(alertDeduplication),
+}));
+
+export const budgetAggregatesRelations = relations(budgetAggregates, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [budgetAggregates.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [budgetAggregates.userId],
+        references: [users.id],
+    }),
+    category: one(categories, {
+        fields: [budgetAggregates.categoryId],
+        references: [categories.id],
+    }),
+}));
+
+export const alertDeduplicationRelations = relations(alertDeduplication, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [alertDeduplication.tenantId],
+        references: [tenants.id],
+    }),
+    budgetAlert: one(budgetAlerts, {
+        fields: [alertDeduplication.budgetAlertId],
+        references: [budgetAlerts.id],
     }),
 }));
