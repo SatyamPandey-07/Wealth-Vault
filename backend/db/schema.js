@@ -9,8 +9,9 @@ export const tenantRoleEnum = pgEnum('tenant_role', ['owner', 'admin', 'manager'
 export const rbacEntityTypeEnum = pgEnum('rbac_entity_type', ['role', 'permission', 'member_role', 'member_permission']);
 
 // Enums for outbox and saga
-export const outboxEventStatusEnum = pgEnum('outbox_event_status', ['pending', 'processing', 'published', 'failed']);
+export const outboxEventStatusEnum = pgEnum('outbox_event_status', ['pending', 'processing', 'published', 'failed', 'dead_letter']);
 export const sagaStatusEnum = pgEnum('saga_status', ['started', 'step_completed', 'compensating', 'completed', 'failed']);
+export const distributedTxStatusEnum = pgEnum('distributed_tx_status', ['started', 'prepared', 'committed', 'aborted', 'failed', 'timed_out']);
 
 // Enums for service authentication
 export const serviceStatusEnum = pgEnum('service_status', ['active', 'suspended', 'revoked']);
@@ -159,6 +160,7 @@ export const users = pgTable('users', {
     lastLogin: timestamp('last_login').defaultNow(),
     mfaEnabled: boolean('mfa_enabled').default(false),
     mfaSecret: text('mfa_secret'),
+    mfaRecoveryCodes: jsonb('mfa_recovery_codes').default([]),
     preferences: jsonb('preferences').default({
         notifications: { email: true, push: true, sms: false },
         theme: 'auto',
@@ -395,6 +397,10 @@ export const outboxEvents = pgTable('outbox_events', {
     lastError: text('last_error'),
     processedAt: timestamp('processed_at'),
     publishedAt: timestamp('published_at'),
+    // Row-level locking fields to prevent duplicate processing
+    processingBy: text('processing_by'), // Worker ID processing this event
+    processingStartedAt: timestamp('processing_started_at'), // When processing started (for heartbeat timeout)
+    lastHeartbeat: timestamp('last_heartbeat'), // Last heartbeat from processing worker
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -436,6 +442,45 @@ export const sagaStepExecutions = pgTable('saga_step_executions', {
     completedAt: timestamp('completed_at'),
     compensatedAt: timestamp('compensated_at'),
     createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Idempotency Keys Table - Prevent duplicate financial operation execution
+export const idempotencyKeys = pgTable('idempotency_keys', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    operation: text('operation').notNull(),
+    idempotencyKey: text('idempotency_key').notNull().unique(),
+    requestHash: text('request_hash'),
+    status: text('status').default('processing'), // processing, completed, failed
+    responseCode: integer('response_code'),
+    responseBody: jsonb('response_body').default({}),
+    resourceType: text('resource_type'),
+    resourceId: uuid('resource_id'),
+    expiresAt: timestamp('expires_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Distributed Transaction Logs - Track 2PC-like lifecycle for financial operations
+export const distributedTransactionLogs = pgTable('distributed_transaction_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    transactionType: text('transaction_type').notNull(),
+    operationKey: text('operation_key').notNull().unique(),
+    sagaInstanceId: uuid('saga_instance_id').references(() => sagaInstances.id, { onDelete: 'set null' }),
+    status: distributedTxStatusEnum('status').default('started'),
+    phase: text('phase').default('init'), // init, prepare, commit, abort
+    timeoutAt: timestamp('timeout_at'),
+    lastError: text('last_error'),
+    payload: jsonb('payload').default({}),
+    result: jsonb('result').default({}),
+    recoveryRequired: boolean('recovery_required').default(false),
+    startedAt: timestamp('started_at').defaultNow(),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 // Service Identities Table - Machine identities for internal services
@@ -890,6 +935,24 @@ export const tokenBlacklist = pgTable('token_blacklist', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Password Reset Tokens Table
+export const passwordResetTokens = pgTable('password_reset_tokens', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    token: text('token').notNull().unique(),
+    hashedToken: text('hashed_token').notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+    used: boolean('used').default(false),
+    createdAt: timestamp('created_at').defaultNow(),
+    usedAt: timestamp('used_at'),
+}, (table) => {
+    return {
+        userIdIdx: index('idx_password_reset_tokens_user_id').on(table.userId),
+        tokenIdx: index('idx_password_reset_tokens_token').on(table.token),
+        expiresAtIdx: index('idx_password_reset_tokens_expires_at').on(table.expiresAt),
+    };
+});
+
 export const reports = pgTable('reports', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
@@ -1285,6 +1348,32 @@ export const sagaInstancesRelations = relations(sagaInstances, ({ one, many }) =
 export const sagaStepExecutionsRelations = relations(sagaStepExecutions, ({ one }) => ({
     sagaInstance: one(sagaInstances, {
         fields: [sagaStepExecutions.sagaInstanceId],
+        references: [sagaInstances.id],
+    }),
+}));
+
+export const idempotencyKeysRelations = relations(idempotencyKeys, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [idempotencyKeys.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [idempotencyKeys.userId],
+        references: [users.id],
+    }),
+}));
+
+export const distributedTransactionLogsRelations = relations(distributedTransactionLogs, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [distributedTransactionLogs.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [distributedTransactionLogs.userId],
+        references: [users.id],
+    }),
+    sagaInstance: one(sagaInstances, {
+        fields: [distributedTransactionLogs.sagaInstanceId],
         references: [sagaInstances.id],
     }),
 }));
@@ -5064,6 +5153,102 @@ export const vaultGuardians = pgTable('vault_guardians', {
     lastVerifiedAt: timestamp('last_verified_at'), // Last time guardian confirmed their shard
     
     // Metadata
+
+// ============================================================================
+// ASYMMETRIC SPV PARTNERSHIP & LP/GP WATERFALL DISTRIBUTION ENGINE (#510)
+// ============================================================================
+
+export const spvEntities = pgTable('spv_entities', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    gpEntityId: uuid('gp_entity_id').references(() => entities.id), // The entity managing the SPV
+    status: text('status').default('active'), // 'active', 'liquidating', 'closed'
+    initialAssetValue: numeric('initial_asset_value', { precision: 20, scale: 2 }),
+    totalCommittedCapital: numeric('total_committed_capital', { precision: 20, scale: 2 }).default('0'),
+    totalCalledCapital: numeric('total_called_capital', { precision: 20, scale: 2 }).default('0'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const lpCommitments = pgTable('lp_commitments', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    spvId: uuid('spv_id').references(() => spvEntities.id, { onDelete: 'cascade' }).notNull(),
+    lpEntityId: uuid('lp_entity_id').references(() => entities.id).notNull(), // Target entity for the commitment
+    committedAmount: numeric('committed_amount', { precision: 20, scale: 2 }).notNull(),
+    calledAmount: numeric('called_amount', { precision: 20, scale: 2 }).default('0'),
+    ownershipPrc: numeric('ownership_prc', { precision: 7, scale: 4 }).notNull(), // Percentage of capital stake
+    status: text('status').default('active'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const waterfallTiers = pgTable('waterfall_tiers', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    spvId: uuid('spv_id').references(() => spvEntities.id, { onDelete: 'cascade' }).notNull(),
+    tierOrder: integer('tier_order').notNull(), // 1, 2, 3...
+    name: text('name').notNull(), // e.g. '8% Preferred Return'
+    allocationType: text('allocation_type').notNull(), // 'hurdle', 'catch_up', 'carried_interest'
+    thresholdIrr: numeric('threshold_irr', { precision: 5, scale: 4 }), // Hurdle rate (e.g. 0.08)
+    lpSplit: numeric('lp_split', { precision: 5, scale: 4 }).notNull(), // Percentage to LPs (e.g. 1.0 for preferred)
+    gpSplit: numeric('gp_split', { precision: 5, scale: 4 }).notNull(), // Percentage to GPs (e.g. 0.0)
+    metadata: jsonb('metadata').default({}),
+});
+
+export const capitalCalls = pgTable('capital_calls', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    spvId: uuid('spv_id').references(() => spvEntities.id, { onDelete: 'cascade' }).notNull(),
+    callAmount: numeric('call_amount', { precision: 20, scale: 2 }).notNull(),
+    callDate: timestamp('call_date').defaultNow(),
+    dueDate: timestamp('due_date'),
+    status: text('status').default('open'), // 'open', 'completed', 'overdue'
+    description: text('description'),
+    metadata: jsonb('metadata').default({}),
+});
+
+// SPV Relations
+export const spvEntitiesRelations = relations(spvEntities, ({ one, many }) => ({
+    user: one(users, { fields: [spvEntities.userId], references: [users.id] }),
+    gpEntity: one(entities, { fields: [spvEntities.gpEntityId], references: [entities.id] }),
+    commitments: many(lpCommitments),
+    tiers: many(waterfallTiers),
+    calls: many(capitalCalls),
+}));
+
+export const lpCommitmentsRelations = relations(lpCommitments, ({ one }) => ({
+    spv: one(spvEntities, { fields: [lpCommitments.spvId], references: [spvEntities.id] }),
+    lpEntity: one(entities, { fields: [lpCommitments.lpEntityId], references: [entities.id] }),
+}));
+
+export const waterfallTiersRelations = relations(waterfallTiers, ({ one }) => ({
+    spv: one(spvEntities, { fields: [waterfallTiers.spvId], references: [spvEntities.id] }),
+}));
+
+export const capitalCallsRelations = relations(capitalCalls, ({ one }) => ({
+    spv: one(spvEntities, { fields: [capitalCalls.spvId], references: [spvEntities.id] }),
+}));
+
+// ============================================================================
+// ALGORITHMIC OPTIONS COLLAR & DERIVATIVES ENGINE (#509)
+// ============================================================================
+
+export const optionsPositions = pgTable('options_positions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    investmentId: uuid('investment_id').references(() => investments.id).notNull(), // Underlying asset
+    vaultId: uuid('vault_id').references(() => vaults.id).notNull(), // Vault holding the collateral
+    type: text('type').notNull(), // 'call', 'put'
+    optionStyle: text('option_style').default('american'), // 'american', 'european'
+    strikePrice: numeric('strike_price', { precision: 20, scale: 2 }).notNull(),
+    expirationDate: timestamp('expiration_date').notNull(),
+    contractsCount: numeric('contracts_count', { precision: 20, scale: 4 }).notNull(), // 1 contract usually = 100 shares
+    premiumPerUnit: numeric('premium_per_unit', { precision: 10, scale: 4 }),
+    status: text('status').default('open'), // 'open', 'closed', 'expired', 'assigned'
+    strategyId: uuid('strategy_id'), // Link to a grouped strategy like a Collar
+    isCovered: boolean('is_covered').default(true),
     metadata: jsonb('metadata').default({}),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
@@ -5177,6 +5362,63 @@ export const recursiveMultiSigRules = pgTable('recursive_multi_sig_rules', {
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
+export const strategyLegs = pgTable('strategy_legs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    strategyName: text('strategy_name').notNull(), // e.g. 'Zero-Cost Collar', 'Covered Call'
+    strategyType: text('strategy_type').notNull(),
+    underlyingInvestmentId: uuid('underlying_investment_id').references(() => investments.id).notNull(),
+    status: text('status').default('active'),
+    netPremium: numeric('net_premium', { precision: 20, scale: 2 }), // Total cost/credit to set up
+    targetDelta: numeric('target_delta', { precision: 5, scale: 4 }), // e.g. 0.3 for a standard protective put
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const impliedVolSurfaces = pgTable('implied_vol_surfaces', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    investmentId: uuid('investment_id').references(() => investments.id).notNull(),
+    observationDate: timestamp('observation_date').defaultNow(),
+    impliedVol: numeric('implied_vol', { precision: 10, scale: 6 }), // Decimal percentage
+    tenorDays: integer('tenor_days'), // e.g. 30, 60, 90
+    moneyness: numeric('moneyness', { precision: 5, scale: 2 }), // e.g. 1.0 (ATM), 1.1 (OTM)
+    source: text('source').default('market_oracle'),
+});
+
+// Push Subscriptions Table - For browser push notifications
+export const pushSubscriptions = pgTable('push_subscriptions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    endpoint: text('endpoint').notNull(), // Push service endpoint URL
+    p256dh: text('p256dh').notNull(), // P-256 elliptic curve Diffie-Hellman public key
+    auth: text('auth').notNull(), // Authentication secret
+    userAgent: text('user_agent'), // Browser/device info
+    isActive: boolean('is_active').default(true),
+    lastUsed: timestamp('last_used').defaultNow(),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Derivatives Relations
+export const optionsPositionsRelations = relations(optionsPositions, ({ one }) => ({
+    user: one(users, { fields: [optionsPositions.userId], references: [users.id] }),
+    investment: one(investments, { fields: [optionsPositions.investmentId], references: [investments.id] }),
+    vault: one(vaults, { fields: [optionsPositions.vaultId], references: [vaults.id] }),
+    strategy: one(strategyLegs, { fields: [optionsPositions.strategyId], references: [strategyLegs.id] }),
+}));
+
+export const strategyLegsRelations = relations(strategyLegs, ({ one, many }) => ({
+    user: one(users, { fields: [strategyLegs.userId], references: [users.id] }),
+    underlying: one(investments, { fields: [strategyLegs.underlyingInvestmentId], references: [investments.id] }),
+    legs: many(optionsPositions),
+}));
+
+export const impliedVolSurfacesRelations = relations(impliedVolSurfaces, ({ one }) => ({
+    investment: one(investments, { fields: [impliedVolSurfaces.investmentId], references: [investments.id] }),
+}));
+export const pushSubscriptionsRelations = relations(pushSubscriptions, ({ one }) => ({
+    user: one(users, { fields: [pushSubscriptions.userId], references: [users.id] }),
+}));
 export const serviceAuthLogsRelations = relations(serviceAuthLogs, ({ one }) => ({
     service: one(serviceIdentities, {
         fields: [serviceAuthLogs.serviceId],

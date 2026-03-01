@@ -6,17 +6,20 @@ import { eq, and } from "drizzle-orm";
 import path from "path";
 import { fileURLToPath } from 'url';
 import db from "../config/db.js";
-import { users, categories, securityEvents } from "../db/schema.js";
+import { users, categories, securityEvents, passwordResetTokens } from "../db/schema.js";
 import { protect } from "../middleware/auth.js";
 import { uploadProfilePicture, saveUploadedFile } from "../middleware/fileUpload.js";
 import fileStorageService from "../services/fileStorageService.js";
 import { getDefaultCategories } from "../utils/defaults.js";
-import { authLimiter } from "../middleware/rateLimiter.js";
-import { validatePasswordStrength, isCommonPassword } from "../utils/passwordValidator.js";
+import { authLimiter, passwordResetLimiter } from "../middleware/rateLimiter.js";
+import { validatePasswordStrength, isCommonPassword, validatePassword } from "../utils/passwordValidator.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import { AppError } from "../utils/AppError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import successionService from "../services/successionService.js";
+import { hashPassword } from "../utils/auth.js";
+import { generatePasswordResetToken, verifyPasswordResetToken } from "../utils/passwordReset.js";
+import { sendPasswordResetEmail, sendPasswordResetSuccessEmail } from "../services/emailService.js";
 
 import {
   createDeviceSession,
@@ -1321,6 +1324,141 @@ router.get("/mfa/status", protect, asyncHandler(async (req, res, next) => {
     mfaEnabled: user.mfaEnabled,
     recoveryCodesStatus: recoveryCodeStatus,
   }, "MFA status retrieved").send(res);
+}));
+
+/**
+ * @swagger
+ * /auth/forgot-password:
+ *   post:
+ *     summary: Request password reset
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 description: User's email address
+ *     responses:
+ *       200:
+ *         description: Password reset email sent
+ *       400:
+ *         description: Invalid email or rate limited
+ *       404:
+ *         description: User not found
+ */
+router.post("/forgot-password", passwordResetLimiter, asyncHandler(async (req, res, next) => {
+  const { email } = req.body;
+
+  if (!email || !email.includes("@")) {
+    return new ApiResponse(400, null, "Valid email is required").send(res);
+  }
+
+  const [user] = await db.select().from(users).where(eq(users.email, email.toLowerCase()));
+
+  if (!user) {
+    // Don't reveal if user exists or not for security
+    return new ApiResponse(200, null, "If an account with that email exists, a password reset link has been sent.").send(res);
+  }
+
+  // Generate password reset token
+  const { token, hashedToken } = await generatePasswordResetToken();
+
+  // Save token to database
+  await db.insert(passwordResetTokens).values({
+    userId: user.id,
+    token: hashedToken,
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
+  });
+
+  // Send password reset email
+  try {
+    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
+    await sendPasswordResetEmail({ email: user.email, userName: user.name, resetToken: token, resetUrl });
+  } catch (error) {
+    console.error("Failed to send password reset email:", error);
+    // Don't fail the request, just log the error
+  }
+
+  return new ApiResponse(200, null, "If an account with that email exists, a password reset link has been sent.").send(res);
+}));
+
+/**
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     summary: Reset password using token
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - token
+ *               - password
+ *             properties:
+ *               token:
+ *                 type: string
+ *                 description: Password reset token from email
+ *               password:
+ *                 type: string
+ *                 minLength: 8
+ *                 description: New password
+ *     responses:
+ *       200:
+ *         description: Password reset successfully
+ *       400:
+ *         description: Invalid token or password
+ *       404:
+ *         description: Token not found or expired
+ */
+router.post("/reset-password", passwordResetLimiter, asyncHandler(async (req, res, next) => {
+  const { token, password } = req.body;
+
+  if (!token || !password) {
+    return new ApiResponse(400, null, "Token and password are required").send(res);
+  }
+
+  // Validate password strength
+  const passwordValidation = validatePassword(password);
+  if (!passwordValidation.isValid) {
+    return new ApiResponse(400, null, passwordValidation.message).send(res);
+  }
+
+  // Verify token
+  const tokenData = await verifyPasswordResetToken(token);
+  if (!tokenData) {
+    return new ApiResponse(400, null, "Invalid or expired token").send(res);
+  }
+
+  // Hash new password
+  const hashedPassword = await hashPassword(password);
+
+  // Update user password
+  await db.update(users)
+    .set({ password: hashedPassword })
+    .where(eq(users.id, tokenData.userId));
+
+  // Delete used token
+  await db.delete(passwordResetTokens).where(eq(passwordResetTokens.id, tokenData.id));
+
+  // Send success email
+  try {
+    const [user] = await db.select().from(users).where(eq(users.id, tokenData.userId));
+    await sendPasswordResetSuccessEmail({ email: user.email, userName: user.name, timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error("Failed to send password reset success email:", error);
+  }
+
+  return new ApiResponse(200, null, "Password reset successfully").send(res);
 }));
 
 export default router;
