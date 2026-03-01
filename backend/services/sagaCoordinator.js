@@ -1,4 +1,4 @@
-import { db } from '../config/db.js';
+import db from '../config/db.js';
 import { sagaInstances, sagaStepExecutions } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import logger from '../utils/logger.js';
@@ -51,7 +51,7 @@ class SagaCoordinator {
      * @param {Object} params.payload - Initial saga payload
      * @returns {Promise<Object>} Created saga instance
      */
-    async startSaga({ sagaType, tenantId, payload }) {
+    async startSaga({ sagaType, tenantId, payload, executeAsync = true, timeoutMs = 30000 }) {
         const steps = this.sagas.get(sagaType);
         
         if (!steps) {
@@ -81,15 +81,19 @@ class SagaCoordinator {
                 totalSteps: steps.length
             });
 
-            // Start executing the saga
-            this.executeSaga(instance.id).catch(err => {
-                logger.error('Saga execution error', {
-                    sagaId: instance.id,
-                    error: err.message
+            if (executeAsync) {
+                this.executeSaga(instance.id).catch(err => {
+                    logger.error('Saga execution error', {
+                        sagaId: instance.id,
+                        error: err.message
+                    });
                 });
-            });
 
-            return instance;
+                return instance;
+            }
+
+            await this.executeSagaWithTimeout(instance.id, timeoutMs);
+            return await this.getSagaInstance(instance.id);
         } catch (error) {
             logger.error('Failed to start saga', {
                 error: error.message,
@@ -145,6 +149,33 @@ class SagaCoordinator {
                 error: error.message
             });
             await this.markSagaAsFailed(sagaId, error.message);
+        }
+    }
+
+    /**
+     * Execute saga with timeout guard
+     * @param {string} sagaId
+     * @param {number} timeoutMs
+     */
+    async executeSagaWithTimeout(sagaId, timeoutMs = 30000) {
+        let timeoutHandle;
+
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutHandle = setTimeout(() => {
+                reject(new Error(`Saga execution timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
+        });
+
+        try {
+            await Promise.race([
+                this.executeSaga(sagaId),
+                timeoutPromise
+            ]);
+        } catch (error) {
+            await this.markSagaAsFailed(sagaId, error.message);
+            throw error;
+        } finally {
+            clearTimeout(timeoutHandle);
         }
     }
 

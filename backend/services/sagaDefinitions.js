@@ -1,8 +1,9 @@
 import sagaCoordinator from './sagaCoordinator.js';
-import { db } from '../config/db.js';
-import { tenants, tenantMembers, categories, rbacRoles, rbacPermissions } from '../db/schema.js';
+import db from '../config/db.js';
+import { tenants, tenantMembers, categories, rbacRoles, rbacPermissions, expenses, outboxEvents } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import logger from '../utils/logger.js';
+import outboxService from './outboxService.js';
 
 /**
  * Tenant Onboarding Saga
@@ -358,17 +359,146 @@ const expenseWorkflowSaga = [
     }
 ];
 
+/**
+ * Financial Expense Operation Saga
+ *
+ * Request-scoped saga for consistent expense writes with compensating behavior:
+ * 1. Create expense row
+ * 2. Update category usage metadata
+ * 3. Write financial outbox event
+ */
+const financialExpenseOperationSaga = [
+    {
+        name: 'create_expense_record',
+        execute: async ({ sagaPayload }) => {
+            const [expense] = await db.insert(expenses).values({
+                tenantId: sagaPayload.tenantId,
+                userId: sagaPayload.userId,
+                amount: String(sagaPayload.amount),
+                description: sagaPayload.description,
+                categoryId: sagaPayload.categoryId,
+                date: sagaPayload.date ? new Date(sagaPayload.date) : new Date(),
+                paymentMethod: sagaPayload.paymentMethod || 'other',
+                location: sagaPayload.location || null,
+                tags: sagaPayload.tags || [],
+                isRecurring: sagaPayload.isRecurring || false,
+                recurringPattern: sagaPayload.recurringPattern || null,
+                notes: sagaPayload.notes || null,
+                subcategory: sagaPayload.subcategory || null,
+                metadata: {
+                    createdBy: 'financialExpenseOperationSaga',
+                    idempotencyKey: sagaPayload.idempotencyKey || null,
+                    operationKey: sagaPayload.operationKey || null
+                }
+            }).returning();
+
+            return { expenseId: expense.id };
+        },
+        compensate: async ({ stepOutput }) => {
+            if (!stepOutput?.expenseId) {
+                return;
+            }
+
+            await db.delete(expenses).where(eq(expenses.id, stepOutput.expenseId));
+        }
+    },
+    {
+        name: 'update_category_usage',
+        execute: async ({ sagaPayload }) => {
+            if (!sagaPayload.categoryId) {
+                return { skipped: true };
+            }
+
+            const usage = await db
+                .select()
+                .from(expenses)
+                .where(eq(expenses.categoryId, sagaPayload.categoryId));
+
+            const count = usage.length;
+            const total = usage.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+            const average = count > 0 ? total / count : 0;
+
+            await db
+                .update(categories)
+                .set({
+                    metadata: {
+                        usageCount: count,
+                        averageAmount: average,
+                        lastUsed: new Date().toISOString()
+                    },
+                    updatedAt: new Date()
+                })
+                .where(eq(categories.id, sagaPayload.categoryId));
+
+            return { categoryUpdated: true };
+        },
+        compensate: async () => {
+            // Best-effort compensation: category usage metadata is eventually consistent
+        }
+    },
+    {
+        name: 'publish_financial_event',
+        execute: async ({ sagaPayload, previousResults }) => {
+            const expenseId = previousResults?.[0]?.expenseId;
+
+            if (!expenseId) {
+                throw new Error('Missing expense id for outbox publication');
+            }
+
+            await db.transaction(async (tx) => {
+                await outboxService.createEvent(tx, {
+                    tenantId: sagaPayload.tenantId,
+                    aggregateType: 'expense',
+                    aggregateId: expenseId,
+                    eventType: 'expense.created.financial',
+                    payload: {
+                        expenseId,
+                        tenantId: sagaPayload.tenantId,
+                        userId: sagaPayload.userId,
+                        amount: sagaPayload.amount,
+                        categoryId: sagaPayload.categoryId,
+                        operationKey: sagaPayload.operationKey || null
+                    },
+                    metadata: {
+                        source: 'financialExpenseOperationSaga'
+                    }
+                });
+            });
+
+            return { eventPublished: true };
+        },
+        compensate: async ({ sagaPayload, previousResults }) => {
+            const expenseId = previousResults?.[0]?.expenseId;
+
+            if (!expenseId) {
+                return;
+            }
+
+            await db
+                .delete(outboxEvents)
+                .where(eq(outboxEvents.aggregateId, expenseId));
+
+            logger.warn('Compensated financial outbox publication', {
+                expenseId,
+                operationKey: sagaPayload?.operationKey || null
+            });
+        }
+    }
+];
+
 // Register all sagas with the coordinator
 sagaCoordinator.registerSaga('tenant_onboarding', tenantOnboardingSaga);
 sagaCoordinator.registerSaga('member_invitation', memberInvitationSaga);
 sagaCoordinator.registerSaga('expense_workflow', expenseWorkflowSaga);
+sagaCoordinator.registerSaga('financial_expense_operation', financialExpenseOperationSaga);
 
 logger.info('Saga definitions registered', {
-    sagas: ['tenant_onboarding', 'member_invitation', 'expense_workflow']
+    sagas: ['tenant_onboarding', 'member_invitation', 'expense_workflow', 'financial_expense_operation']
 });
 
 export {
     tenantOnboardingSaga,
     memberInvitationSaga,
-    expenseWorkflowSaga
+    expenseWorkflowSaga,
+    financialExpenseOperationSaga
 };
