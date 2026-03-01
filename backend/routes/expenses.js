@@ -13,6 +13,7 @@ import cacheService from "../services/cacheService.js";
 import { routeCache, cacheInvalidation } from "../middleware/cache.js";
 import { executeQuery } from "../utils/queryOptimization.js";
 import { trackQuery } from "../utils/queryPerformanceTracker.js";
+import budgetService from "../services/budgetService.js";
 
 const router = express.Router();
 
@@ -287,6 +288,11 @@ router.post(
 
       // Invalidate caches
       await cacheService.invalidateExpenseCache(req.user.id, req.user.tenantId || req.user.id, newExpense.id);
+
+      // Check budget alerts (async, don't block response)
+      budgetService.checkBudgetAfterExpense(newExpense).catch(error => {
+        console.error('Budget alert check failed:', error);
+      });
 
       res.status(201).json({
         success: true,
