@@ -12,6 +12,8 @@ import { swaggerSpec } from "./config/swagger.js";
 import { connectRedis } from "./config/redis.js";
 import { scheduleCleanup } from "./jobs/tokenCleanup.js";
 import { initializeUploads } from "./middleware/fileUpload.js";
+import outboxDispatcher from "./jobs/outboxDispatcher.js";
+import "./services/sagaDefinitions.js"; // Register saga definitions
 import { createFileServerRoute } from "./middleware/secureFileServer.js";
 import { requestIdMiddleware, requestLogger, errorLogger, analyticsMiddleware } from "./middleware/requestLogger.js";
 import { auditLogger } from "./middleware/auditLogger.js";
@@ -46,6 +48,10 @@ connectRedis().catch(err => {
 
 // Schedule token cleanup job
 scheduleCleanup();
+
+// Start outbox event dispatcher
+outboxDispatcher.start();
+console.log('📤 Outbox dispatcher started');
 
 // Initiliz uplod directorys
 initializeUploads().catch(err => {

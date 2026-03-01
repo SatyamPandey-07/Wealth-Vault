@@ -8,6 +8,10 @@ export const tenantRoleEnum = pgEnum('tenant_role', ['owner', 'admin', 'manager'
 // Enums for advanced RBAC
 export const rbacEntityTypeEnum = pgEnum('rbac_entity_type', ['role', 'permission', 'member_role', 'member_permission']);
 
+// Enums for outbox and saga
+export const outboxEventStatusEnum = pgEnum('outbox_event_status', ['pending', 'processing', 'published', 'failed']);
+export const sagaStatusEnum = pgEnum('saga_status', ['started', 'step_completed', 'compensating', 'completed', 'failed']);
+
 // Tenants Table - Multi-tenancy support
 export const tenants = pgTable('tenants', {
     id: uuid('id').defaultRandom().primaryKey(),
@@ -273,6 +277,64 @@ export const tokenBlacklist = pgTable('token_blacklist', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Outbox Events Table - Transactional outbox pattern for reliable event publishing
+export const outboxEvents = pgTable('outbox_events', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    aggregateType: text('aggregate_type').notNull(), // tenant, user, expense, goal, etc.
+    aggregateId: uuid('aggregate_id').notNull(),
+    eventType: text('event_type').notNull(), // tenant.created, user.invited, expense.created, etc.
+    payload: jsonb('payload').notNull().default({}),
+    metadata: jsonb('metadata').default({}),
+    status: outboxEventStatusEnum('status').default('pending'),
+    retryCount: integer('retry_count').default(0),
+    maxRetries: integer('max_retries').default(3),
+    lastError: text('last_error'),
+    processedAt: timestamp('processed_at'),
+    publishedAt: timestamp('published_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Saga Instances Table - Track long-running distributed transactions
+export const sagaInstances = pgTable('saga_instances', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    sagaType: text('saga_type').notNull(), // tenant_onboarding, member_invitation, billing_payment, etc.
+    correlationId: uuid('correlation_id').notNull().unique(),
+    status: sagaStatusEnum('status').default('started'),
+    currentStep: text('current_step'),
+    stepIndex: integer('step_index').default(0),
+    totalSteps: integer('total_steps').notNull(),
+    payload: jsonb('payload').notNull().default({}),
+    stepResults: jsonb('step_results').default([]),
+    compensationData: jsonb('compensation_data').default({}),
+    error: text('error'),
+    startedAt: timestamp('started_at').defaultNow(),
+    completedAt: timestamp('completed_at'),
+    failedAt: timestamp('failed_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Saga Step Executions Table - Track individual step execution history
+export const sagaStepExecutions = pgTable('saga_step_executions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    sagaInstanceId: uuid('saga_instance_id').references(() => sagaInstances.id, { onDelete: 'cascade' }).notNull(),
+    stepName: text('step_name').notNull(),
+    stepIndex: integer('step_index').notNull(),
+    status: text('status').notNull(), // started, completed, failed, compensating, compensated
+    input: jsonb('input').default({}),
+    output: jsonb('output').default({}),
+    error: text('error'),
+    compensated: boolean('compensated').default(false),
+    retryCount: integer('retry_count').default(0),
+    startedAt: timestamp('started_at').defaultNow(),
+    completedAt: timestamp('completed_at'),
+    compensatedAt: timestamp('compensated_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
     ownedTenants: many(tenants),
@@ -443,5 +505,27 @@ export const tokenBlacklistRelations = relations(tokenBlacklist, ({ one }) => ({
     user: one(users, {
         fields: [tokenBlacklist.userId],
         references: [users.id],
+    }),
+}));
+
+export const outboxEventsRelations = relations(outboxEvents, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [outboxEvents.tenantId],
+        references: [tenants.id],
+    }),
+}));
+
+export const sagaInstancesRelations = relations(sagaInstances, ({ one, many }) => ({
+    tenant: one(tenants, {
+        fields: [sagaInstances.tenantId],
+        references: [tenants.id],
+    }),
+    stepExecutions: many(sagaStepExecutions),
+}));
+
+export const sagaStepExecutionsRelations = relations(sagaStepExecutions, ({ one }) => ({
+    sagaInstance: one(sagaInstances, {
+        fields: [sagaStepExecutions.sagaInstanceId],
+        references: [sagaInstances.id],
     }),
 }));
