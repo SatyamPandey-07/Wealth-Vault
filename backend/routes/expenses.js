@@ -6,6 +6,10 @@ import { expenses, categories, users } from "../db/schema.js";
 import { protect, checkOwnership } from "../middleware/auth.js";
 import { asyncHandler, ValidationError, NotFoundError } from "../middleware/errorHandler.js";
 import { parseListQuery } from "../utils/pagination.js";
+import cacheService from "../services/cacheService.js";
+import { routeCache, cacheInvalidation } from "../middleware/cache.js";
+import { executeQuery } from "../utils/queryOptimization.js";
+import { trackQuery } from "../utils/queryPerformanceTracker.js";
 
 const router = express.Router();
 
@@ -120,7 +124,7 @@ const updateCategoryStats = async (categoryId) => {
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.get("/", protect, asyncHandler(async (req, res) => {
+router.get("/", protect, routeCache.list('expenses', cacheService.TTL.SHORT), asyncHandler(async (req, res) => {
   const queryOptions = {
     allowedSortFields: ['date', 'amount', 'createdAt'],
     defaultSortField: 'date',
@@ -129,6 +133,22 @@ router.get("/", protect, asyncHandler(async (req, res) => {
   };
 
   const { pagination, sorting, search, filters, dateRange } = parseListQuery(req.query, queryOptions);
+  
+  // Generate cache key
+  const cacheKey = cacheService.cacheKeys.expensesList(req.user.id, {
+    ...filters,
+    ...pagination,
+    ...sorting,
+    search: search.search,
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+  });
+  
+  // Try to get from cache
+  const cachedResult = await cacheService.get(cacheKey);
+  if (cachedResult) {
+    return res.paginated(cachedResult.items, cachedResult.pagination, 'Expenses retrieved successfully (cached)');
+  }
   
   const conditions = [eq(expenses.userId, req.user.id)];
 
@@ -156,26 +176,34 @@ router.get("/", protect, asyncHandler(async (req, res) => {
   if (sorting.sortBy === "amount") orderByColumn = expenses.amount;
   if (sorting.sortBy === "createdAt") orderByColumn = expenses.createdAt;
 
-  const [expensesList, countResult] = await Promise.all([
-    db.query.expenses.findMany({
-      where: and(...conditions),
-      orderBy: [sortFn(orderByColumn)],
-      limit: pagination.limit,
-      offset: pagination.offset,
-      with: {
-        category: {
-          columns: { name: true, color: true, icon: true },
-        },
-      },
-    }),
-    db
-      .select({ count: sql`count(*)` })
-      .from(expenses)
-      .where(and(...conditions)),
-  ]);
+  // Execute query with performance tracking
+  const [expensesList, countResult] = await executeQuery(async () => {
+    return await trackQuery('expenses.list', { userId: req.user.id })(async () => {
+      return await Promise.all([
+        db.query.expenses.findMany({
+          where: and(...conditions),
+          orderBy: [sortFn(orderByColumn)],
+          limit: pagination.limit,
+          offset: pagination.offset,
+          with: {
+            category: {
+              columns: { name: true, color: true, icon: true },
+            },
+          },
+        }),
+        db
+          .select({ count: sql`count(*)` })
+          .from(expenses)
+          .where(and(...conditions)),
+      ]);
+    });
+  }, 'expenses.list');
 
   const total = Number(countResult[0]?.count || 0);
   const paginatedData = req.buildPaginatedResponse(expensesList, total);
+
+  // Cache the result
+  await cacheService.set(cacheKey, paginatedData, cacheService.TTL.SHORT);
 
   return res.paginated(paginatedData.items, paginatedData.pagination, 'Expenses retrieved successfully');
 }));
@@ -232,13 +260,15 @@ router.post(
         subcategory,
       } = req.body;
 
-      // Verify category
-      const [categoryDoc] = await db
-        .select()
-        .from(categories)
-        .where(
-          and(eq(categories.id, category), eq(categories.userId, req.user.id))
-        );
+      // Verify category with tracking
+      const [categoryDoc] = await trackQuery('expenses.verifyCategory', { userId: req.user.id })(async () => {
+        return await db
+          .select()
+          .from(categories)
+          .where(
+            and(eq(categories.id, category), eq(categories.userId, req.user.id))
+          );
+      });
 
       if (!categoryDoc) {
         return res
@@ -246,23 +276,26 @@ router.post(
           .json({ success: false, message: "Invalid category" });
       }
 
-      const [newExpense] = await db
-        .insert(expenses)
-        .values({
-          userId: req.user.id,
-          amount: amount.toString(),
-          description,
-          categoryId: category,
-          date: date ? new Date(date) : new Date(),
-          paymentMethod: paymentMethod || "other",
-          location,
-          tags: tags || [],
-          isRecurring: isRecurring || false,
-          recurringPattern,
-          notes,
-          subcategory,
-        })
-        .returning();
+      const [newExpense] = await trackQuery('expenses.create', { userId: req.user.id })(async () => {
+        return await db
+          .insert(expenses)
+          .values({
+            userId: req.user.id,
+            tenantId: req.user.tenantId || req.user.id,
+            amount: amount.toString(),
+            description,
+            categoryId: category,
+            date: date ? new Date(date) : new Date(),
+            paymentMethod: paymentMethod || "other",
+            location,
+            tags: tags || [],
+            isRecurring: isRecurring || false,
+            recurringPattern,
+            notes,
+            subcategory,
+          })
+          .returning();
+      });
 
       // Update category stats (async, don't block response necessarily, but good to wait)
       await updateCategoryStats(category);
@@ -273,6 +306,9 @@ router.post(
           category: { columns: { name: true, color: true, icon: true } },
         },
       });
+
+      // Invalidate caches
+      await cacheService.invalidateExpenseCache(req.user.id, req.user.tenantId || req.user.id, newExpense.id);
 
       res.status(201).json({
         success: true,
@@ -388,6 +424,9 @@ router.delete("/:id", protect, checkOwnership("Expense"), async (req, res) => {
       await updateCategoryStats(expense.categoryId);
     }
 
+    // Invalidate caches
+    await cacheService.invalidateExpenseCache(req.user.id, req.user.tenantId || req.user.id, req.params.id);
+
     res.json({ success: true, message: "Expense deleted successfully" });
   } catch (error) {
     console.error("Delete expense error:", error);
@@ -410,40 +449,43 @@ router.get("/stats/summary", protect, async (req, res) => {
       : new Date(new Date().getFullYear(), 0, 1);
     const end = endDate ? new Date(endDate) : new Date();
 
-    const conditions = [
-      eq(expenses.userId, req.user.id),
-      eq(expenses.status, "completed"),
-      gte(expenses.date, start),
-      lte(expenses.date, end),
-    ];
+    // Generate cache key for stats
+    const cacheKey = cacheService.cacheKeys.analytics(req.user.id, 'expenseSummary', `${start.toISOString()}-${end.toISOString()}`);
+    
+    // Try to get from cache
+    const result = await cacheService.cacheQuery(cacheKey, async () => {
+      const conditions = [
+        eq(expenses.userId, req.user.id),
+        eq(expenses.status, "completed"),
+        gte(expenses.date, start),
+        lte(expenses.date, end),
+      ];
 
-    // Total expenses
-    const [totalResult] = await db
-      .select({
-        total: sql`sum(${expenses.amount})`,
-        count: sql`count(*)`,
-      })
-      .from(expenses)
-      .where(and(...conditions));
+      // Total expenses
+      const [totalResult] = await db
+        .select({
+          total: sql`sum(${expenses.amount})`,
+          count: sql`count(*)`,
+        })
+        .from(expenses)
+        .where(and(...conditions));
 
-    // By Category
-    const byCategory = await db
-      .select({
-        categoryId: expenses.categoryId,
-        categoryName: categories.name,
-        categoryColor: categories.color,
-        total: sql`sum(${expenses.amount})`,
-        count: sql`count(*)`,
-      })
-      .from(expenses)
-      .leftJoin(categories, eq(expenses.categoryId, categories.id))
-      .where(and(...conditions))
-      .groupBy(expenses.categoryId, categories.name, categories.color) // Ensure grouping correctness
-      .orderBy(desc(sql`sum(${expenses.amount})`)); // Sort by total amount
+      // By Category
+      const byCategory = await db
+        .select({
+          categoryId: expenses.categoryId,
+          categoryName: categories.name,
+          categoryColor: categories.color,
+          total: sql`sum(${expenses.amount})`,
+          count: sql`count(*)`,
+        })
+        .from(expenses)
+        .leftJoin(categories, eq(expenses.categoryId, categories.id))
+        .where(and(...conditions))
+        .groupBy(expenses.categoryId, categories.name, categories.color) // Ensure grouping correctness
+        .orderBy(desc(sql`sum(${expenses.amount})`)); // Sort by total amount
 
-    res.json({
-      success: true,
-      data: {
+      return {
         summary: {
           total: Number(totalResult?.total || 0),
           count: Number(totalResult?.count || 0),
@@ -454,7 +496,12 @@ router.get("/stats/summary", protect, async (req, res) => {
           total: Number(item.total),
           count: Number(item.count),
         })),
-      },
+      };
+    }, cacheService.TTL.ANALYTICS);
+
+    res.json({
+      success: true,
+      data: result,
     });
   } catch (error) {
     console.error("Get expense stats error:", error);
