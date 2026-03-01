@@ -8,6 +8,14 @@ export const tenantRoleEnum = pgEnum('tenant_role', ['owner', 'admin', 'manager'
 // Enums for advanced RBAC
 export const rbacEntityTypeEnum = pgEnum('rbac_entity_type', ['role', 'permission', 'member_role', 'member_permission']);
 
+// Enums for outbox and saga
+export const outboxEventStatusEnum = pgEnum('outbox_event_status', ['pending', 'processing', 'published', 'failed']);
+export const sagaStatusEnum = pgEnum('saga_status', ['started', 'step_completed', 'compensating', 'completed', 'failed']);
+
+// Enums for service authentication
+export const serviceStatusEnum = pgEnum('service_status', ['active', 'suspended', 'revoked']);
+export const certificateStatusEnum = pgEnum('certificate_status', ['active', 'rotating', 'revoked', 'expired']);
+
 // Tenants Table - Multi-tenancy support
 export const tenants = pgTable('tenants', {
     id: uuid('id').defaultRandom().primaryKey(),
@@ -106,6 +114,30 @@ export const rbacAuditLogs = pgTable('rbac_audit_logs', {
     entityId: uuid('entity_id'),
     changes: jsonb('changes').default({}),
     metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Centralized Audit Logs - Tamper-evident activity logging for compliance and security
+export const auditLogs = pgTable('audit_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'set null' }),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    category: text('category').default('general'),
+    resourceType: text('resource_type'),
+    resourceId: text('resource_id'),
+    method: text('method'),
+    path: text('path'),
+    statusCode: integer('status_code'),
+    outcome: text('outcome').default('success'),
+    severity: text('severity').default('low'),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').default({}),
+    changes: jsonb('changes').default({}),
+    previousHash: text('previous_hash'),
+    entryHash: text('entry_hash').notNull(),
     createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -348,6 +380,119 @@ export const subscriptionUsage = pgTable('subscription_usage', {
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+// Outbox Events Table - Transactional outbox pattern for reliable event publishing
+export const outboxEvents = pgTable('outbox_events', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    aggregateType: text('aggregate_type').notNull(), // tenant, user, expense, goal, etc.
+    aggregateId: uuid('aggregate_id').notNull(),
+    eventType: text('event_type').notNull(), // tenant.created, user.invited, expense.created, etc.
+    payload: jsonb('payload').notNull().default({}),
+    metadata: jsonb('metadata').default({}),
+    status: outboxEventStatusEnum('status').default('pending'),
+    retryCount: integer('retry_count').default(0),
+    maxRetries: integer('max_retries').default(3),
+    lastError: text('last_error'),
+    processedAt: timestamp('processed_at'),
+    publishedAt: timestamp('published_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Saga Instances Table - Track long-running distributed transactions
+export const sagaInstances = pgTable('saga_instances', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    sagaType: text('saga_type').notNull(), // tenant_onboarding, member_invitation, billing_payment, etc.
+    correlationId: uuid('correlation_id').notNull().unique(),
+    status: sagaStatusEnum('status').default('started'),
+    currentStep: text('current_step'),
+    stepIndex: integer('step_index').default(0),
+    totalSteps: integer('total_steps').notNull(),
+    payload: jsonb('payload').notNull().default({}),
+    stepResults: jsonb('step_results').default([]),
+    compensationData: jsonb('compensation_data').default({}),
+    error: text('error'),
+    startedAt: timestamp('started_at').defaultNow(),
+    completedAt: timestamp('completed_at'),
+    failedAt: timestamp('failed_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Saga Step Executions Table - Track individual step execution history
+export const sagaStepExecutions = pgTable('saga_step_executions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    sagaInstanceId: uuid('saga_instance_id').references(() => sagaInstances.id, { onDelete: 'cascade' }).notNull(),
+    stepName: text('step_name').notNull(),
+    stepIndex: integer('step_index').notNull(),
+    status: text('status').notNull(), // started, completed, failed, compensating, compensated
+    input: jsonb('input').default({}),
+    output: jsonb('output').default({}),
+    error: text('error'),
+    compensated: boolean('compensated').default(false),
+    retryCount: integer('retry_count').default(0),
+    startedAt: timestamp('started_at').defaultNow(),
+    completedAt: timestamp('completed_at'),
+    compensatedAt: timestamp('compensated_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Service Identities Table - Machine identities for internal services
+export const serviceIdentities = pgTable('service_identities', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    serviceName: text('service_name').notNull().unique(),
+    displayName: text('display_name').notNull(),
+    description: text('description'),
+    serviceType: text('service_type').notNull(), // api, worker, scheduler, external
+    status: serviceStatusEnum('status').default('active'),
+    allowedScopes: jsonb('allowed_scopes').default([]).notNull(), // e.g., ['read:tenant', 'write:audit']
+    metadata: jsonb('metadata').default({}),
+    lastAuthAt: timestamp('last_auth_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Service Certificates Table - mTLS certificates for services
+export const serviceCertificates = pgTable('service_certificates', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    serviceId: uuid('service_id').references(() => serviceIdentities.id, { onDelete: 'cascade' }).notNull(),
+    certificateId: text('certificate_id').notNull().unique(), // Unique identifier for the cert
+    serialNumber: text('serial_number').notNull().unique(),
+    fingerprint: text('fingerprint').notNull().unique(), // SHA-256 fingerprint
+    publicKey: text('public_key').notNull(), // PEM format
+    privateKey: text('private_key'), // Encrypted PEM format (only stored if managed internally)
+    issuer: text('issuer').notNull(),
+    subject: text('subject').notNull(),
+    status: certificateStatusEnum('status').default('active'),
+    notBefore: timestamp('not_before').notNull(),
+    notAfter: timestamp('not_after').notNull(),
+    rotationScheduledAt: timestamp('rotation_scheduled_at'),
+    revokedAt: timestamp('revoked_at'),
+    revokedReason: text('revoked_reason'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Service Auth Logs Table - Audit trail for service authentication attempts
+export const serviceAuthLogs = pgTable('service_auth_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    serviceId: uuid('service_id').references(() => serviceIdentities.id, { onDelete: 'set null' }),
+    serviceName: text('service_name').notNull(),
+    certificateId: text('certificate_id'),
+    authMethod: text('auth_method').notNull(), // mtls, jwt, mtls+jwt
+    outcome: text('outcome').notNull(), // success, failure
+    failureReason: text('failure_reason'),
+    requestedScopes: jsonb('requested_scopes').default([]),
+    grantedScopes: jsonb('granted_scopes').default([]),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
     ownedTenants: many(tenants),
@@ -357,6 +502,7 @@ export const usersRelations = relations(users, ({ many }) => ({
     goals: many(goals),
     deviceSessions: many(deviceSessions),
     rbacAuditLogs: many(rbacAuditLogs),
+    auditLogs: many(auditLogs),
 }));
 
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -371,6 +517,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
     rbacRoles: many(rbacRoles),
     rbacPermissions: many(rbacPermissions),
     rbacAuditLogs: many(rbacAuditLogs),
+    auditLogs: many(auditLogs),
 }));
 
 export const tenantMembersRelations = relations(tenantMembers, ({ one, many }) => ({
@@ -439,6 +586,17 @@ export const rbacAuditLogsRelations = relations(rbacAuditLogs, ({ one }) => ({
     }),
     actor: one(users, {
         fields: [rbacAuditLogs.actorUserId],
+        references: [users.id],
+    }),
+}));
+
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [auditLogs.tenantId],
+        references: [tenants.id],
+    }),
+    actor: one(users, {
+        fields: [auditLogs.actorUserId],
         references: [users.id],
     }),
 }));
@@ -893,103 +1051,11 @@ export const cashFlowProjections = pgTable('cash_flow_projections', {
     userDateIdx: index('idx_cash_flow_user_date').on(table.userId, table.projectionDate),
 }));
 
-// ============================================================================
-// INVESTMENTS & DEBT
-// ============================================================================
-
-export const debts = pgTable('debts', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    name: text('name').notNull(),
-    debtType: text('debt_type').notNull(),
-    principalAmount: numeric('principal_amount', { precision: 12, scale: 2 }).notNull(),
-    currentBalance: numeric('current_balance', { precision: 12, scale: 2 }).notNull(),
-    baseCurrencyValue: numeric('base_currency_value', { precision: 12, scale: 2 }),
-    baseCurrencyCode: text('base_currency_code'),
-    valuationDate: timestamp('valuation_date'),
-    apr: numeric('apr', { precision: 5, scale: 3 }).notNull(),
-    minimumPayment: numeric('minimum_payment', { precision: 12, scale: 2 }).notNull(),
-    paymentDueDay: integer('payment_due_day'),
-    termMonths: integer('term_months'),
-    estimatedPayoffDate: timestamp('estimated_payoff_date'),
-    isActive: boolean('is_active').default(true),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-export const debtPayments = pgTable('debt_payments', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    debtId: uuid('debt_id').references(() => debts.id, { onDelete: 'cascade' }).notNull(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    paymentAmount: numeric('payment_amount', { precision: 12, scale: 2 }).notNull(),
-    paymentDate: timestamp('payment_date').notNull(),
-    principalPayment: numeric('principal_payment', { precision: 12, scale: 2 }).notNull(),
-    interestPayment: numeric('interest_payment', { precision: 12, scale: 2 }).notNull(),
-    createdAt: timestamp('created_at').defaultNow(),
-});
-
-export const payoffStrategies = pgTable('payoff_strategies', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    strategyName: text('strategy_name').notNull(),
-    monthlyExtraPayment: numeric('monthly_extra_payment', { precision: 12, scale: 2 }).default('0'),
-    isActive: boolean('is_active').default(true),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-export const amortizationSchedules = pgTable('amortization_schedules', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    debtId: uuid('debt_id').references(() => debts.id, { onDelete: 'cascade' }).notNull(),
-    strategyId: uuid('strategy_id').references(() => payoffStrategies.id, { onDelete: 'set null' }),
-    scheduledDate: timestamp('scheduled_date').notNull(),
-    paymentNumber: integer('payment_number').notNull(),
-    paymentAmount: numeric('payment_amount', { precision: 12, scale: 2 }).notNull(),
-    principalComponent: numeric('principal_component', { precision: 12, scale: 2 }).notNull(),
-    interestComponent: numeric('interest_component', { precision: 12, scale: 2 }).notNull(),
-    remainingBalance: numeric('remaining_balance', { precision: 12, scale: 2 }).notNull(),
-    isPaid: boolean('is_paid').default(false),
-    createdAt: timestamp('created_at').defaultNow(),
-});
-
-export const refinanceOpportunities = pgTable('refinance_opportunities', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    debtId: uuid('debt_id').references(() => debts.id, { onDelete: 'cascade' }).notNull(),
-    currentApr: numeric('current_apr', { precision: 5, scale: 3 }).notNull(),
-    suggestedApr: numeric('suggested_apr', { precision: 5, scale: 3 }).notNull(),
-    potentialSavings: numeric('potential_savings', { precision: 12, scale: 2 }).notNull(),
-    createdAt: timestamp('created_at').defaultNow(),
-});
-
-// ============================================================================
-// INTERNAL DEBT MARKET & INTERLOCKING NETWORK (#459)
-// ============================================================================
-
-export const internalDebts = pgTable('internal_debts', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    lenderVaultId: uuid('lender_vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
-    borrowerVaultId: uuid('borrower_vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
-    principalAmount: numeric('principal_amount', { precision: 24, scale: 8 }).notNull(),
-    currentBalance: numeric('current_balance', { precision: 24, scale: 8 }).notNull(),
-    interestRate: numeric('interest_rate', { precision: 5, scale: 2 }).notNull(), // Annual interest rate (Base rate if floating)
-    rateType: text('rate_type').default('fixed'), // fixed, floating
-    indexSource: text('index_source'), // e.g., 'FedRates', 'SOFR' from economic_volatility_indices
-    interestSpread: numeric('interest_spread', { precision: 5, scale: 2 }).default('0'), // Added to index rate if floating
-    accruedInterest: numeric('accrued_interest', { precision: 24, scale: 8 }).default('0'),
-    compoundingFrequency: text('compounding_frequency').default('daily'), // daily, monthly, yearly
-    repaymentPriority: integer('repayment_priority').default(1),
-    autoSweepThreshold: numeric('auto_sweep_threshold', { precision: 24, scale: 8 }).default('0'),
-    status: text('status').default('active'), // active, repaid, defaulted
-    lastAccrualDate: timestamp('last_accrual_date').defaultNow(),
-    metadata: jsonb('metadata').default({}),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-}, (table) => ({
-    lenderIdx: index('idx_internal_debt_lender').on(table.lenderVaultId),
-    borrowerIdx: index('idx_internal_debt_borrower').on(table.borrowerVaultId),
-    userIdx: index('idx_internal_debt_user').on(table.userId),
+export const outboxEventsRelations = relations(outboxEvents, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [outboxEvents.tenantId],
+        references: [tenants.id],
+    }),
 }));
 
 
@@ -1208,201 +1274,32 @@ export const defaultSimulations = pgTable('default_simulations', {
     typeIdx: index('idx_simulations_type').on(table.simulationType),
     statusIdx: index('idx_simulations_status').on(table.status),
     createdIdx: index('idx_simulations_created').on(table.createdAt),
+export const sagaInstancesRelations = relations(sagaInstances, ({ one, many }) => ({
+    tenant: one(tenants, {
+        fields: [sagaInstances.tenantId],
+        references: [tenants.id],
+    }),
+    stepExecutions: many(sagaStepExecutions),
 }));
 
-// ============================================================================
-// DYNAMIC REBALANCING ORDERS & VAULT CONSOLIDATION (#449)
-// ============================================================================
+export const sagaStepExecutionsRelations = relations(sagaStepExecutions, ({ one }) => ({
+    sagaInstance: one(sagaInstances, {
+        fields: [sagaStepExecutions.sagaInstanceId],
+        references: [sagaInstances.id],
+    }),
+}));
 
-export const rebalancingOrders = pgTable('rebalancing_orders', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
-    orderType: text('order_type').notNull(), // 'buy', 'sell'
-    assetSymbol: text('asset_symbol').notNull(),
-    quantity: numeric('quantity', { precision: 18, scale: 8 }).notNull(),
-    estimatedPrice: numeric('estimated_price', { precision: 18, scale: 2 }).notNull(),
-    status: text('status').default('proposed'), // 'proposed', 'approved', 'executed', 'cancelled'
-    driftDelta: numeric('drift_delta', { precision: 5, scale: 4 }),
-    metadata: jsonb('metadata').default({}),
-    executedAt: timestamp('executed_at'),
-    createdAt: timestamp('created_at').defaultNow(),
-});
+export const serviceIdentitiesRelations = relations(serviceIdentities, ({ many }) => ({
+    certificates: many(serviceCertificates),
+    authLogs: many(serviceAuthLogs),
+}));
 
-export const vaultConsolidationLogs = pgTable('vault_consolidation_logs', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    consolidationDate: timestamp('consolidation_date').defaultNow(),
-    consolidatedBalance: numeric('consolidated_balance', { precision: 18, scale: 2 }).notNull(),
-    vaultIds: jsonb('vault_ids').notNull(), // Array of vault IDs consolidated
-    assetDistribution: jsonb('asset_distribution').notNull(), // { 'equity': 0.6, 'crypto': 0.4 }
-    metadata: jsonb('metadata').default({}),
-});
-
-// ============================================================================
-// TAX MODULE
-// ============================================================================
-
-export const taxCategories = pgTable('tax_categories', {
-    id: serial('id').primaryKey(),
-
-    // Category identity
-    categoryName: varchar('category_name', { length: 200 }).notNull().unique(),
-    description: text('description'),
-
-    // Deductibility rules
-    deductibilityType: varchar('deductibility_type', { length: 50 }).notNull(),
-    deductibilityRate: numeric('deductibility_rate', { precision: 3, scale: 2 }).default('1.00'),
-
-    // Regulatory compliance
-    taxJurisdiction: varchar('tax_jurisdiction', { length: 100 }).default('US_Federal'),
-    irsCode: varchar('irs_code', { length: 100 }),
-    conditionsForDeductibility: jsonb('conditions_for_deductibility').default('{}'),
-
-    // Limits and thresholds
-    maxDeductionLimit: numeric('max_deduction_limit', { precision: 15, scale: 2 }),
-    percentageAgiLimit: numeric('percentage_agi_limit', { precision: 5, scale: 2 }),
-
-    // Categorization assistance
-    applicableExpenseCategories: text('applicable_expense_categories').array(),
-    exampleExpenses: text('example_expenses').array(),
-    requiredDocumentation: text('required_documentation').array(),
-
-    // Metadata
-    isActive: boolean('is_active').default(true),
-    priorityOrder: integer('priority_order').default(0),
-
-    // Timestamps
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-export const taxProfiles = pgTable('tax_profiles', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull().unique(),
-    country: text('country').default('US'),
-    filingStatus: text('filing_status').default('single'),
-    taxYear: integer('tax_year').notNull(),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-export const taxDeductions = pgTable('tax_deductions', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    expenseId: uuid('expense_id').references(() => expenses.id, { onDelete: 'cascade' }),
-    taxYear: integer('tax_year').notNull(),
-    category: text('category').notNull(),
-    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
-    createdAt: timestamp('created_at').defaultNow(),
-});
-
-export const taxBrackets = pgTable('tax_brackets', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    country: text('country').default('US'),
-    taxYear: integer('tax_year').notNull(),
-    filingStatus: text('filing_status').notNull(),
-    bracketLevel: integer('bracket_level').notNull(),
-    minIncome: numeric('min_income', { precision: 12, scale: 2 }).notNull(),
-    maxIncome: numeric('max_income', { precision: 12, scale: 2 }),
-    rate: numeric('rate', { precision: 5, scale: 2 }).notNull(),
-    createdAt: timestamp('created_at').defaultNow(),
-});
-
-export const taxReports = pgTable('tax_reports', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    taxYear: integer('tax_year').notNull(),
-    reportType: text('report_type').default('annual'),
-    totalIncome: numeric('total_income', { precision: 12, scale: 2 }),
-    totalDeductions: numeric('total_deductions', { precision: 12, scale: 2 }),
-    taxableIncome: numeric('taxable_income', { precision: 12, scale: 2 }),
-    totalTaxOwed: numeric('total_tax_owed', { precision: 12, scale: 2 }),
-    effectiveTaxRate: numeric('effective_tax_rate', { precision: 5, scale: 2 }),
-    marginalTaxRate: numeric('marginal_tax_rate', { precision: 5, scale: 2 }),
-    estimatedRefund: numeric('estimated_refund', { precision: 12, scale: 2 }),
-    breakdown: jsonb('breakdown'),
-    createdAt: timestamp('created_at').defaultNow(),
-});
-
-export const userTaxProfiles = pgTable('user_tax_profiles', {
-    id: serial('id').primaryKey(),
-    userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull().unique(),
-
-    // Filing status and basic info
-    filingStatus: varchar('filing_status', { length: 50 }).default('single').notNull(),
-    annualIncome: numeric('annual_income', { precision: 15, scale: 2 }).default('0'),
-    estimatedTaxBracket: varchar('estimated_tax_bracket', { length: 20 }),
-    standardDeduction: numeric('standard_deduction', { precision: 15, scale: 2 }).default('14600.00'),
-
-    // Taxpayer classification
-    dependents: integer('dependents').default(0),
-    selfEmployed: boolean('self_employed').default(false),
-    businessOwner: boolean('business_owner').default(false),
-    quarterlyTaxPayer: boolean('quarterly_tax_payer').default(false),
-
-    // Filing dates
-    lastFilingDate: date('last_filing_date'),
-    nextFilingDeadline: date('next_filing_deadline'),
-
-    // Tax preferences
-    taxPreferences: jsonb('tax_preferences').default('{}'),
-    itemizeDeductions: boolean('itemize_deductions').default(false),
-
-    // Year-to-date tracking
-    ytdTaxPaid: numeric('ytd_tax_paid', { precision: 15, scale: 2 }).default('0'),
-    ytdTaxableIncome: numeric('ytd_taxable_income', { precision: 15, scale: 2 }).default('0'),
-    ytdDeductions: numeric('ytd_deductions', { precision: 15, scale: 2 }).default('0'),
-    estimatedQuarterlyPayments: numeric('estimated_quarterly_payments', { precision: 15, scale: 2 }).default('0'),
-
-    // AI optimization
-    aiTaxAdvice: jsonb('ai_tax_advice').default('{}'),
-    lastAiAnalysisDate: timestamp('last_ai_analysis_date'),
-    optimizationPreferences: jsonb('optimization_preferences').default('{}'),
-
-    // Reminders and notifications
-    reminderPreferences: jsonb('reminder_preferences').default('{"quarterly": true, "annual": true, "threshold_alerts": true}'),
-
-    // Timestamps
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-// ============================================================================
-// PREDICTIVE TAX-LOSS HARVESTING MODULE (#442)
-// ============================================================================
-
-export const taxLossOpportunities = pgTable('tax_loss_opportunities', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
-    investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }).notNull(),
-    assetSymbol: text('asset_symbol').notNull(),
-    unrealizedLoss: numeric('unrealized_loss', { precision: 18, scale: 2 }).notNull(),
-    taxSavingsEstimate: numeric('tax_savings_estimate', { precision: 18, scale: 2 }),
-    status: text('status').default('pending'), // 'pending', 'executed', 'dismissed'
-    proxyAssetSymbol: text('proxy_asset_symbol'),
-    correlationScore: numeric('correlation_score', { precision: 5, scale: 4 }),
-    metadata: jsonb('metadata').default({}),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-export const washSaleViolations = pgTable('wash_sale_violations', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }),
-    assetSymbol: text('asset_symbol').notNull(),
-    violationDate: timestamp('violation_date').notNull(),
-    description: text('description'),
-    disallowedLoss: numeric('disallowed_loss', { precision: 18, scale: 2 }).notNull(),
-    metadata: jsonb('metadata').default({}),
-    createdAt: timestamp('created_at').defaultNow(),
-});
-
-// ============================================================================
-// ALGORITHMIC MULTI-ENTITY TAX-LOSS HARVESTING (#482)
-// ============================================================================
+export const serviceCertificatesRelations = relations(serviceCertificates, ({ one }) => ({
+    service: one(serviceIdentities, {
+        fields: [serviceCertificates.serviceId],
+        references: [serviceIdentities.id],
+    }),
+}));
 
 export const taxLots = pgTable('tax_lots', {
     id: uuid('id').defaultRandom().primaryKey(),
@@ -5241,4 +5138,10 @@ export const strategyLegsRelations = relations(strategyLegs, ({ one, many }) => 
 
 export const impliedVolSurfacesRelations = relations(impliedVolSurfaces, ({ one }) => ({
     investment: one(investments, { fields: [impliedVolSurfaces.investmentId], references: [investments.id] }),
+}));
+export const serviceAuthLogsRelations = relations(serviceAuthLogs, ({ one }) => ({
+    service: one(serviceIdentities, {
+        fields: [serviceAuthLogs.serviceId],
+        references: [serviceIdentities.id],
+    }),
 }));
