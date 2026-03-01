@@ -2,27 +2,47 @@ import rateLimit from "express-rate-limit";
 import { RedisStore } from "rate-limit-redis";
 import { getRedisClient, isRedisAvailable } from "../config/redis.js";
 
-// Create store function with fallback (only check Redis once)
+/**
+ * Rate Limiter with Dynamic Redis Store and Graceful Degradation
+ * 
+ * Creates rate limiters that:
+ * - Use Redis for distributed rate limiting when available
+ * - Automatically fall back to memory-based limiting if Redis unavailable
+ * - Handle Redis connection state changes gracefully
+ */
+
+/**
+ * Create store function with runtime Redis availability check
+ * This is called on each rate limit check, allowing dynamic fallback
+ */
 const createStore = () => {
+  // Check if Redis is available at request time
   if (isRedisAvailable()) {
     const redisClient = getRedisClient();
     if (redisClient && redisClient.isReady) {
-      return new RedisStore({
-        sendCommand: (...args) => redisClient.sendCommand(args),
-      });
+      try {
+        return new RedisStore({
+          sendCommand: (...args) => redisClient.sendCommand(args),
+          prefix: 'rl:', // Rate limit prefix
+        });
+      } catch (error) {
+        console.warn('⚠️ Failed to create Redis store, falling back to memory:', error.message);
+      }
     }
   }
-  return undefined; // Falls back to memory store
+  // Falls back to memory store (not shared across instances)
+  return undefined;
 };
 
 // Enhanced rate limiter with proper headers and user identification
 const createRateLimiter = (options) => {
   return rateLimit({
+    // Dynamic store creation - checked on each request
     store: createStore(),
-    standardHeaders: true,
+    standardHeaders: true, // Return rate limit info in headers
     legacyHeaders: false,
     keyGenerator: (req, res) => {
-      // Use user ID if authenticated, otherwise use express-rate-limit's IP helper
+      // Use user ID if authenticated, otherwise use IP
       if (req.user && req.user.id) {
         return `user:${req.user.id}`;
       }
@@ -38,6 +58,10 @@ const createRateLimiter = (options) => {
         remaining: 0,
         resetTime: new Date(Date.now() + options.windowMs).toISOString(),
       });
+    },
+    // Skip rate limiting for /health endpoint
+    skip: (req) => {
+      return req.path === '/api/health' || req.path === '/health';
     },
     ...options,
   });
