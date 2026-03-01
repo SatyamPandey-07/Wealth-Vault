@@ -12,6 +12,10 @@ export const rbacEntityTypeEnum = pgEnum('rbac_entity_type', ['role', 'permissio
 export const outboxEventStatusEnum = pgEnum('outbox_event_status', ['pending', 'processing', 'published', 'failed']);
 export const sagaStatusEnum = pgEnum('saga_status', ['started', 'step_completed', 'compensating', 'completed', 'failed']);
 
+// Enums for service authentication
+export const serviceStatusEnum = pgEnum('service_status', ['active', 'suspended', 'revoked']);
+export const certificateStatusEnum = pgEnum('certificate_status', ['active', 'rotating', 'revoked', 'expired']);
+
 // Tenants Table - Multi-tenancy support
 export const tenants = pgTable('tenants', {
     id: uuid('id').defaultRandom().primaryKey(),
@@ -335,6 +339,61 @@ export const sagaStepExecutions = pgTable('saga_step_executions', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Service Identities Table - Machine identities for internal services
+export const serviceIdentities = pgTable('service_identities', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    serviceName: text('service_name').notNull().unique(),
+    displayName: text('display_name').notNull(),
+    description: text('description'),
+    serviceType: text('service_type').notNull(), // api, worker, scheduler, external
+    status: serviceStatusEnum('status').default('active'),
+    allowedScopes: jsonb('allowed_scopes').default([]).notNull(), // e.g., ['read:tenant', 'write:audit']
+    metadata: jsonb('metadata').default({}),
+    lastAuthAt: timestamp('last_auth_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Service Certificates Table - mTLS certificates for services
+export const serviceCertificates = pgTable('service_certificates', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    serviceId: uuid('service_id').references(() => serviceIdentities.id, { onDelete: 'cascade' }).notNull(),
+    certificateId: text('certificate_id').notNull().unique(), // Unique identifier for the cert
+    serialNumber: text('serial_number').notNull().unique(),
+    fingerprint: text('fingerprint').notNull().unique(), // SHA-256 fingerprint
+    publicKey: text('public_key').notNull(), // PEM format
+    privateKey: text('private_key'), // Encrypted PEM format (only stored if managed internally)
+    issuer: text('issuer').notNull(),
+    subject: text('subject').notNull(),
+    status: certificateStatusEnum('status').default('active'),
+    notBefore: timestamp('not_before').notNull(),
+    notAfter: timestamp('not_after').notNull(),
+    rotationScheduledAt: timestamp('rotation_scheduled_at'),
+    revokedAt: timestamp('revoked_at'),
+    revokedReason: text('revoked_reason'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Service Auth Logs Table - Audit trail for service authentication attempts
+export const serviceAuthLogs = pgTable('service_auth_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    serviceId: uuid('service_id').references(() => serviceIdentities.id, { onDelete: 'set null' }),
+    serviceName: text('service_name').notNull(),
+    certificateId: text('certificate_id'),
+    authMethod: text('auth_method').notNull(), // mtls, jwt, mtls+jwt
+    outcome: text('outcome').notNull(), // success, failure
+    failureReason: text('failure_reason'),
+    requestedScopes: jsonb('requested_scopes').default([]),
+    grantedScopes: jsonb('granted_scopes').default([]),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
     ownedTenants: many(tenants),
@@ -527,5 +586,24 @@ export const sagaStepExecutionsRelations = relations(sagaStepExecutions, ({ one 
     sagaInstance: one(sagaInstances, {
         fields: [sagaStepExecutions.sagaInstanceId],
         references: [sagaInstances.id],
+    }),
+}));
+
+export const serviceIdentitiesRelations = relations(serviceIdentities, ({ many }) => ({
+    certificates: many(serviceCertificates),
+    authLogs: many(serviceAuthLogs),
+}));
+
+export const serviceCertificatesRelations = relations(serviceCertificates, ({ one }) => ({
+    service: one(serviceIdentities, {
+        fields: [serviceCertificates.serviceId],
+        references: [serviceIdentities.id],
+    }),
+}));
+
+export const serviceAuthLogsRelations = relations(serviceAuthLogs, ({ one }) => ({
+    service: one(serviceIdentities, {
+        fields: [serviceAuthLogs.serviceId],
+        references: [serviceIdentities.id],
     }),
 }));
