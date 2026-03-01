@@ -9,6 +9,7 @@ import { eq, and } from 'drizzle-orm';
 import db from '../config/db.js';
 import { tenants, tenantMembers, users } from '../db/schema.js';
 import { getMemberAuthorizationContext, initializeTenantRbac } from '../services/rbacService.js';
+import { buildRoutingDecision, extractTenantRegionConfig, isDataClassRestricted } from '../services/multiRegionService.js';
 import { logger } from '../utils/logger.js';
 import policyEngineService from '../services/policyEngineService.js';
 
@@ -128,6 +129,8 @@ export const validateTenantAccess = async (req, res, next) => {
     }
 
     // Attach tenant context to request
+    const regionConfig = extractTenantRegionConfig(tenant);
+
     req.tenant = {
       id: tenant.id,
       name: tenant.name,
@@ -135,7 +138,9 @@ export const validateTenantAccess = async (req, res, next) => {
       tier: tenant.tier,
       features: tenant.features,
       settings: tenant.settings,
-      ownerId: tenant.ownerId
+      ownerId: tenant.ownerId,
+      homeRegion: regionConfig.homeRegion,
+      residencyPolicy: regionConfig.residencyPolicy
     };
 
     req.tenantMembership = {
@@ -144,6 +149,44 @@ export const validateTenantAccess = async (req, res, next) => {
       permissions: membership.permissions,
       joinedAt: membership.joinedAt
     };
+
+    const regionRoutingEnabled = process.env.ENABLE_REGION_ROUTING === 'true';
+    if (regionRoutingEnabled) {
+      const requestRegion = req.headers['x-region'] || req.headers['x-app-region'] || process.env.APP_REGION;
+      const routingDecision = buildRoutingDecision({
+        tenant: req.tenant,
+        requestRegion,
+        method: req.method
+      });
+
+      req.regionRouting = routingDecision;
+
+      if (!routingDecision.allow) {
+        return res.status(409).json({
+          success: false,
+          message: 'Request must be served from tenant home region',
+          code: 'REGION_POLICY_BLOCKED',
+          homeRegion: routingDecision.homeRegion,
+          requestRegion: routingDecision.requestRegion,
+          reason: routingDecision.reason
+        });
+      }
+
+      const dataClass = String(req.headers['x-data-class'] || req.body?.dataClass || 'operational').toLowerCase();
+      if (
+        routingDecision.requestRegion !== routingDecision.homeRegion &&
+        isDataClassRestricted(req.tenant, dataClass)
+      ) {
+        return res.status(409).json({
+          success: false,
+          message: 'Residency-restricted data must remain in tenant home region',
+          code: 'RESIDENCY_DATA_BLOCKED',
+          dataClass,
+          homeRegion: routingDecision.homeRegion,
+          requestRegion: routingDecision.requestRegion
+        });
+      }
+    }
 
     await initializeTenantRbac(tenant.id, req.user.id, membership.id);
 
