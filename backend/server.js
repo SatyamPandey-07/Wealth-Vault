@@ -178,17 +178,6 @@ const startServer = async () => {
     console.log('🚀 Starting Wealth Vault Server...');
     console.log('⏳ Initializing services...');
 
-    // Initialize Database Connection (CRITICAL - must succeed)
-    try {
-      console.log('🔄 Connecting to database...');
-      await connectDatabase();
-      console.log('✅ Database connected successfully');
-    } catch (err) {
-      console.error('❌ CRITICAL: Database connection failed:', err.message);
-      console.error('   Server cannot start without database connection.');
-      process.exit(1); // Fail fast
-    }
-
     // Initialize DB Router (with read/write split)
     try {
       await initializeDBRouter();
@@ -369,27 +358,13 @@ const startServer = async () => {
     app.use("/api/categories", userLimiter, categoryRoutes);
     app.use("/api/analytics", userLimiter, analyticsRoutes);
     app.use("/api/gemini", aiLimiter, geminiRouter);
-    app.use("/api/health", async (req, res) => {
-      const redisState = getConnectionState();
-      const dbState = getDatabaseState();
-      const dbHealthy = await isDatabaseHealthy();
-      
-      const overallHealthy = dbHealthy && dbState.isConnected;
-      
-      res.status(overallHealthy ? 200 : 503).json({
-        status: overallHealthy ? "OK" : "DEGRADED",
-        message: overallHealthy 
-          ? "Wealth Vault API is running" 
-          : "API running with degraded services",
-        timestamp: new Date().toISOString(),
-        services: {
-          database: {
-            state: dbState.state,
-            isConnected: dbState.isConnected,
-            healthy: dbHealthy,
-            attempts: dbState.attempts,
-            ...(dbState.lastError && { lastError: dbState.lastError })
-          },
+    app.use("/api/health", healthRoutes);
+    app.use("/api/performance", userLimiter, performanceRoutes);
+    app.use("/api/tenants", userLimiter, tenantRoutes);
+    app.use("/api/audit", userLimiter, auditRoutes);
+    app.use("/api/db-router", userLimiter, dbRouterRoutes);
+    app.use("/api/authorization", userLimiter, authorizationRoutes);
+
     // Secur fil servr for uploddd fils
     app.use("/uploads", createFileServerRoute());
 
@@ -404,27 +379,17 @@ const startServer = async () => {
           redis: {
             state: redisState.state,
             circuitBreaker: redisState.circuitBreaker,
-            isConnected: redisState.isConn,
-        databaseConnected: getDatabaseState().isConnected
+            isConnected: redisState.isConnected
+          }
+        }
       });
-      
-      console.log(`\n🚀 Server running on port ${PORT}`);
-      console.log(
-        `📱 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:3000"}`
-      );
-      console.log(`🔗 API Base URL: http://localhost:${PORT}/api`);
-      console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
-      console.log(`🏥 Health Check: http://localhost:${PORT}/api/health`);
-      
-      // Database status
-      const dbState = getDatabaseState();
-      if (dbState.isConnected) {
-        console.log('✅ Database: Connected');
-      } else {
-        console.log('❌ Database: Not connected');
-      }
-      
-      // Redis statusp.use(errorLogger);
+    });
+
+    // 404 handler for undefined routes (must be before error handler)
+    app.use(notFound);
+
+    // Add error logging middleware
+    app.use(errorLogger);
 
     // DB routing error handler (must be before general error handler)
     app.use(dbRoutingErrorHandler());
@@ -439,13 +404,10 @@ const startServer = async () => {
         port: PORT,
         environment: process.env.NODE_ENV || 'development',
         frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
-    console.log('✅ Background jobs stopped');
-    
-    // Disconnect from Redis
-    await disconnectRedis();
-    
-    // Disconnect from Database
-    await disconnectDatabaseerver running on port ${PORT}`);
+        redisAvailable: isRedisAvailable()
+      });
+      
+      console.log(`\n🚀 Server running on port ${PORT}`);
       console.log(
         `📱 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:3000"}`
       );
