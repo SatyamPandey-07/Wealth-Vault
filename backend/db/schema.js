@@ -192,36 +192,7 @@ export const categories = pgTable('categories', {
     budget: jsonb('budget').default({ monthly: 0, yearly: 0 }),
     spendingLimit: numeric('spending_limit', { precision: 12, scale: 2 }).default('0'),
     priority: integer('priority').default(0),
-    metadata: jsonb('metadata').default({ usageCount: 0, lastUsed: null, averageAmount: 0 }),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-// Budget Alerts Table
-export const budgetAlerts = pgTable('budget_alerts', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }),
-    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
-    threshold: integer('threshold').notNull(), // 50, 80, 100
-    period: text('period').notNull(), // '2023-10'
-    triggeredAt: timestamp('triggered_at').defaultNow(),
-    metadata: jsonb('metadata').default({}),
-});
-
-export const budgetRules = pgTable('budget_rules', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }).notNull(),
-    name: text('name').notNull(),
-    description: text('description'),
-    ruleType: text('rule_type').notNull(), // 'percentage', 'amount', 'frequency'
-    condition: jsonb('condition').notNull(), // { operator: '>', value: 500, period: 'week' }
-    threshold: numeric('threshold', { precision: 12, scale: 2 }).notNull(),
-    period: text('period').notNull(), // 'daily', 'weekly', 'monthly', 'yearly'
-    notificationType: text('notification_type').notNull(), // 'email', 'push', 'in_app'
-    isActive: boolean('is_active').default(true),
-    lastTriggered: timestamp('last_triggered'),
+    version: integer('version').default(1).notNull(), // Optimistic locking version
     metadata: jsonb('metadata').default({
         triggerCount: 0,
         lastAmount: 0,
@@ -338,21 +309,26 @@ export const sharedBudgets = pgTable('shared_budgets', {
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-// Vaults Module
-export const vaults = pgTable('vaults', {
+// Goal Contribution Line Items - Immutable per-goal audit trail for precise progress
+export const goalContributionLineItems = pgTable('goal_contribution_line_items', {
     id: uuid('id').defaultRandom().primaryKey(),
-    name: text('name').notNull(),
+    goalId: uuid('goal_id').references(() => goals.id, { onDelete: 'cascade' }).notNull(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    amountCents: integer('amount_cents').notNull(),
+    rawAmount: numeric('raw_amount', { precision: 12, scale: 2 }).notNull(),
+    currency: text('currency').default('USD').notNull(),
+    entryType: text('entry_type').default('contribution').notNull(), // contribution, adjustment, reconciliation
     description: text('description'),
-    ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    currency: text('currency').default('USD'),
-    isActive: boolean('is_active').default(true),
-    status: text('status').default('active'), // 'active', 'frozen'
+    idempotencyKey: text('idempotency_key').unique(),
+    sourceExpenseId: uuid('source_expense_id').references(() => expenses.id, { onDelete: 'set null' }),
+    metadata: jsonb('metadata').default({}),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-// Subscriptions Table  
-export const subscriptions = pgTable('subscriptions', {
+// Device Sessions Table for token management
+export const deviceSessions = pgTable('device_sessions', {
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null' }),
@@ -538,6 +514,76 @@ export const serviceAuthLogs = pgTable('service_auth_logs', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Budget Alerts Table - Track budget alert thresholds and configurations
+export const budgetAlerts = pgTable('budget_alerts', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }).notNull(),
+    alertType: text('alert_type').notNull(), // 'threshold', 'daily_limit', 'weekly_limit', 'monthly_budget'
+    threshold: numeric('threshold', { precision: 12, scale: 2 }).notNull(), // Alert triggers at this amount
+    thresholdPercentage: numeric('threshold_percentage', { precision: 5, scale: 2 }).default('80'), // Or percentage of budget
+    scope: text('scope').default('monthly'), // 'daily', 'weekly', 'monthly', 'yearly'
+    isActive: boolean('is_active').default(true),
+    notificationChannels: jsonb('notification_channels').default(['email', 'in-app']), // Channels to notify
+    metadata: jsonb('metadata').default({
+        lastTriggeredAt: null,
+        triggerCount: 0,
+        createdReason: 'user_configured'
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Budget Aggregates Table - Materialized view data with version control for race condition prevention
+export const budgetAggregates = pgTable('budget_aggregates', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }).notNull(),
+    period: text('period').notNull(), // 'daily', 'weekly', 'monthly', 'yearly'
+    periodStart: timestamp('period_start').notNull(),
+    periodEnd: timestamp('period_end').notNull(),
+    totalSpent: numeric('total_spent', { precision: 12, scale: 2 }).default('0').notNull(),
+    totalCount: integer('total_count').default(0).notNull(),
+    averageTransaction: numeric('average_transaction', { precision: 12, scale: 2 }).default('0'),
+    maxTransaction: numeric('max_transaction', { precision: 12, scale: 2 }).default('0'),
+    minTransaction: numeric('min_transaction', { precision: 12, scale: 2 }).default('0'),
+    version: integer('version').default(1).notNull(), // Optimistic locking version
+    // Isolation level and consistency tracking
+    isolationLevel: text('isolation_level').default('read_committed'), // read_committed, serializable
+    computedAt: timestamp('computed_at').defaultNow(),
+    refreshedAt: timestamp('refreshed_at'),
+    nextRefreshAt: timestamp('next_refresh_at'),
+    isStale: boolean('is_stale').default(false),
+    metadata: jsonb('metadata').default({
+        sourceCount: 0,
+        lastEventId: null
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Alert Deduplication Table - Prevent duplicate alert firings using event-driven deduplication
+export const alertDeduplication = pgTable('alert_deduplication', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    budgetAlertId: uuid('budget_alert_id').references(() => budgetAlerts.id, { onDelete: 'cascade' }).notNull(),
+    deduplicationKey: text('deduplication_key').notNull(), // hash of alert trigger conditions
+    lastFiredAt: timestamp('last_fired_at'),
+    fireCount: integer('fire_count').default(0),
+    isActive: boolean('is_active').default(true),
+    // TTL for deduplication window - prevents duplicate alerts within certain timeframe
+    deduplicationWindowMs: integer('deduplication_window_ms').default(3600000), // 1 hour default
+    expiresAt: timestamp('expires_at').notNull(), // When this deduplication entry expires
+    metadata: jsonb('metadata').default({
+        reason: null,
+        suppressedCount: 0
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
     ownedTenants: many(tenants),
@@ -545,9 +591,12 @@ export const usersRelations = relations(users, ({ many }) => ({
     categories: many(categories),
     expenses: many(expenses),
     goals: many(goals),
+    goalContributionLineItems: many(goalContributionLineItems),
     deviceSessions: many(deviceSessions),
     rbacAuditLogs: many(rbacAuditLogs),
     auditLogs: many(auditLogs),
+    budgetAlerts: many(budgetAlerts),
+    budgetAggregates: many(budgetAggregates),
 }));
 
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -559,10 +608,14 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
     categories: many(categories),
     expenses: many(expenses),
     goals: many(goals),
+    goalContributionLineItems: many(goalContributionLineItems),
     rbacRoles: many(rbacRoles),
     rbacPermissions: many(rbacPermissions),
     rbacAuditLogs: many(rbacAuditLogs),
     auditLogs: many(auditLogs),
+    budgetAlerts: many(budgetAlerts),
+    budgetAggregates: many(budgetAggregates),
+    alertDeduplication: many(alertDeduplication),
 }));
 
 export const tenantMembersRelations = relations(tenantMembers, ({ one, many }) => ({
@@ -689,59 +742,10 @@ export const financialHealthScores = pgTable('financial_health_scores', {
         confidence: 'low',
         warning: null
     }),
-    periodStart: timestamp('period_start').notNull(),
-    periodEnd: timestamp('period_end').notNull(),
-    calculatedAt: timestamp('calculated_at').defaultNow(),
-    createdAt: timestamp('created_at').defaultNow(),
-}, (table) => {
-    return {
-        userIdIdx: index('idx_financial_health_scores_user_id').on(table.userId),
-        calculatedAtIdx: index('idx_financial_health_scores_calculated_at').on(table.calculatedAt),
-        ratingIdx: index('idx_financial_health_scores_rating').on(table.rating),
-    };
-});
-
-// ============================================================================
-// INVESTMENTS & ASSETS
-// ============================================================================
-
-export const portfolios = pgTable('portfolios', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    name: text('name').notNull(),
-    totalValue: numeric('total_value', { precision: 15, scale: 2 }).default('0'),
-    riskTolerance: text('risk_tolerance').default('moderate'),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-});
-
-export const investments = pgTable('investments', {
-    id: uuid('id').defaultRandom().primaryKey(),
-    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
-    symbol: text('symbol').notNull(),
-    name: text('name').notNull(),
-    type: text('type').notNull(), // stock, crypto, etf, mutual_fund
-    quantity: numeric('quantity', { precision: 18, scale: 8 }).notNull(),
-    averageCost: numeric('average_cost', { precision: 18, scale: 8 }).notNull(),
-    totalCost: numeric('total_cost', { precision: 18, scale: 2 }).notNull(),
-    currentPrice: numeric('current_price', { precision: 18, scale: 8 }),
-    marketValue: numeric('market_value', { precision: 18, scale: 2 }),
-    unrealizedGainLoss: numeric('unrealized_gain_loss', { precision: 18, scale: 2 }),
-    unrealizedGainLossPercent: numeric('unrealized_gain_loss_percent', { precision: 10, scale: 2 }),
-    baseCurrencyValue: numeric('base_currency_value', { precision: 18, scale: 2 }),
-    baseCurrencyCode: text('base_currency_code'),
-    valuationDate: timestamp('valuation_date'),
-    lastPriceUpdate: timestamp('last_price_update'),
-    isActive: boolean('is_active').default(true),
-    metadata: jsonb('metadata').default({}),
-    createdAt: timestamp('created_at').defaultNow(),
-    updatedAt: timestamp('updated_at').defaultNow(),
-}, (table) => ({
-    userIdx: index('idx_investments_user').on(table.userId),
-    portfolioIdx: index('idx_investments_portfolio').on(table.portfolioId),
-    symbolIdx: index('idx_investments_symbol').on(table.symbol),
+    expenses: many(expenses),
+    goals: many(goals),
+    budgetAlerts: many(budgetAlerts),
+    budgetAggregates: many(budgetAggregates),
 }));
 
 export const expensesRelations = relations(expenses, ({ one }) => ({
@@ -770,7 +774,26 @@ export const goalsRelations = relations(goals, ({ one }) => ({
     }),
     category: one(categories, {
         fields: [goals.categoryId],
+        references: [categories.id],
+    }),
+}));
+
+export const goalContributionLineItemsRelations = relations(goalContributionLineItems, ({ one }) => ({
+    goal: one(goals, {
+        fields: [goalContributionLineItems.goalId],
         references: [goals.id],
+    }),
+    tenant: one(tenants, {
+        fields: [goalContributionLineItems.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [goalContributionLineItems.userId],
+        references: [users.id],
+    }),
+    sourceExpense: one(expenses, {
+        fields: [goalContributionLineItems.sourceExpenseId],
+        references: [expenses.id],
     }),
 }));
 
@@ -5249,5 +5272,47 @@ export const serviceAuthLogsRelations = relations(serviceAuthLogs, ({ one }) => 
     service: one(serviceIdentities, {
         fields: [serviceAuthLogs.serviceId],
         references: [serviceIdentities.id],
+    }),
+}));
+
+export const budgetAlertsRelations = relations(budgetAlerts, ({ one, many }) => ({
+    tenant: one(tenants, {
+        fields: [budgetAlerts.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [budgetAlerts.userId],
+        references: [users.id],
+    }),
+    category: one(categories, {
+        fields: [budgetAlerts.categoryId],
+        references: [categories.id],
+    }),
+    deduplicationEntries: many(alertDeduplication),
+}));
+
+export const budgetAggregatesRelations = relations(budgetAggregates, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [budgetAggregates.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [budgetAggregates.userId],
+        references: [users.id],
+    }),
+    category: one(categories, {
+        fields: [budgetAggregates.categoryId],
+        references: [categories.id],
+    }),
+}));
+
+export const alertDeduplicationRelations = relations(alertDeduplication, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [alertDeduplication.tenantId],
+        references: [tenants.id],
+    }),
+    budgetAlert: one(budgetAlerts, {
+        fields: [alertDeduplication.budgetAlertId],
+        references: [budgetAlerts.id],
     }),
 }));

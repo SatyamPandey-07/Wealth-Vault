@@ -1,221 +1,323 @@
+/**
+ * Budget Alerts API Routes
+ * 
+ * Provides endpoints for budget alert management and real-time budget monitoring
+ * with race condition prevention through materialized views and optimistic locking
+ */
+
 import express from 'express';
-import { eq, and, desc, sql, gte, lte } from 'drizzle-orm';
+import { body, param, query, validationResult } from 'express-validator';
+import { eq, and } from 'drizzle-orm';
 import db from '../config/db.js';
-import { budgetAlerts, budgetRules, users, categories, vaults } from '../db/schema.js';
 import { protect } from '../middleware/auth.js';
-import notificationService from '../services/notificationService.js';
-import budgetService from '../services/budgetService.js';
-import { asyncHandler } from '../middleware/errorHandler.js';
-import { ApiResponse } from '../utils/ApiResponse.js';
-import { AppError } from '../utils/AppError.js';
+import { budgetAlerts, budgetAggregates } from '../db/schema.js';
+import budgetAlertService from '../services/budgetAlertService.js';
+import logger from '../utils/logger.js';
 
 const router = express.Router();
 
-// Apply auth middleware to all routes
-router.use(protect);
-
 /**
  * @swagger
- * /api/budget-alerts:
+ * /budget-alerts/summary:
  *   get:
- *     summary: Get user's budget alerts
+ *     summary: Get budget summary with aggregated spending data
  *     tags: [Budget Alerts]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
- *         name: status
+ *         name: categoryId
  *         schema:
  *           type: string
- *           enum: [active, triggered, all]
- *         default: active
+ *           format: uuid
+ *         required: true
+ *         description: Category ID to get budget summary for
+ *     responses:
+ *       200:
+ *         description: Budget summary with daily, weekly, monthly, yearly aggregates
+ *       400:
+ *         description: Invalid parameters
+ *       404:
+ *         description: Category not found
+ */
+router.get('/summary', protect, async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { categoryId } = req.query;
+
+    if (!categoryId) {
+      return res.status(400).json({
+        error: 'categoryId is required',
+      });
+    }
+
+    const summary = await budgetAlertService.getBudgetSummary(req.user.id, categoryId);
+
+    res.json({
+      success: true,
+      data: summary,
+    });
+  } catch (error) {
+    logger.error('Error getting budget summary', {
+      error: error.message,
+      userId: req.user.id,
+    });
+
+    res.status(500).json({
+      error: 'Failed to get budget summary',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /budget-alerts/create:
+ *   post:
+ *     summary: Create a new budget alert
+ *     tags: [Budget Alerts]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [categoryId, threshold, alertType]
+ *             properties:
+ *               categoryId:
+ *                 type: string
+ *                 format: uuid
+ *               alertType:
+ *                 type: string
+ *                 enum: [threshold, daily_limit, weekly_limit, monthly_budget]
+ *               threshold:
+ *                 type: number
+ *                 description: Alert triggers at this amount
+ *               thresholdPercentage:
+ *                 type: number
+ *                 default: 80
+ *                 description: Or percentage of budget
+ *               scope:
+ *                 type: string
+ *                 enum: [daily, weekly, monthly, yearly]
+ *                 default: monthly
+ *               channels:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 default: [email, in-app]
+ *                 description: Notification channels
+ *     responses:
+ *       201:
+ *         description: Budget alert created successfully
+ *       400:
+ *         description: Validation error
+ *       404:
+ *         description: Category not found
+ */
+router.post(
+  '/create',
+  protect,
+  body('categoryId').isUUID('all').withMessage('Invalid category ID'),
+  body('alertType')
+    .isIn(['threshold', 'daily_limit', 'weekly_limit', 'monthly_budget'])
+    .withMessage('Invalid alert type'),
+  body('threshold').isFloat({ min: 0 }).withMessage('Threshold must be positive'),
+  body('thresholdPercentage').optional().isFloat({ min: 1, max: 100 }).withMessage('Invalid percentage'),
+  body('scope')
+    .optional()
+    .isIn(['daily', 'weekly', 'monthly', 'yearly'])
+    .withMessage('Invalid scope'),
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { categoryId, alertType, threshold, thresholdPercentage, scope, channels } = req.body;
+
+      // Verify category exists and belongs to user
+      const category = await db.query.categories.findFirst({
+        where: eq(categories.id, categoryId),
+      });
+
+      if (!category || category.userId !== req.user.id) {
+        return res.status(404).json({
+          error: 'Category not found',
+        });
+      }
+
+      // Create alert
+      const alert = await budgetAlertService.createBudgetAlert(req.user.id, categoryId, {
+        alertType,
+        threshold,
+        thresholdPercentage,
+        scope,
+        channels,
+      });
+
+      logger.info('Budget alert created', {
+        userId: req.user.id,
+        categoryId,
+        alertId: alert.id,
+        alertType,
+      });
+
+      res.status(201).json({
+        success: true,
+        data: alert,
+      });
+    } catch (error) {
+      logger.error('Error creating budget alert', {
+        error: error.message,
+        userId: req.user.id,
+      });
+
+      res.status(500).json({
+        error: 'Failed to create budget alert',
+        message: error.message,
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /budget-alerts:
+ *   get:
+ *     summary: Get all budget alerts for user
+ *     tags: [Budget Alerts]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
  *       - in: query
- *         name: limit
+ *         name: categoryId
  *         schema:
- *           type: integer
- *           default: 20
+ *           type: string
+ *           format: uuid
+ *         description: Filter by category ID
+ *       - in: query
+ *         name: isActive
+ *         schema:
+ *           type: boolean
+ *         description: Filter by active status
  *     responses:
  *       200:
  *         description: List of budget alerts
  */
-router.get('/', asyncHandler(async (req, res) => {
-  const { status = 'active', limit = 20 } = req.query;
-  const userId = req.user.id;
+router.get('/', protect, async (req, res) => {
+  try {
+    const { categoryId, isActive } = req.query;
 
-  let whereCondition = eq(budgetAlerts.userId, userId);
+    const conditions = [eq(budgetAlerts.userId, req.user.id)];
 
-  if (status === 'triggered') {
-    whereCondition = and(whereCondition, sql`${budgetAlerts.triggeredAt} IS NOT NULL`);
-  } else if (status === 'active') {
-    whereCondition = and(whereCondition, sql`${budgetAlerts.triggeredAt} IS NULL`);
+    if (categoryId) {
+      conditions.push(eq(budgetAlerts.categoryId, categoryId));
+    }
+
+    if (isActive !== undefined) {
+      conditions.push(eq(budgetAlerts.isActive, isActive === 'true'));
+    }
+
+    const alerts = await db.query.budgetAlerts.findMany({
+      where: and(...conditions),
+    });
+
+    res.json({
+      success: true,
+      data: alerts,
+      count: alerts.length,
+    });
+  } catch (error) {
+    logger.error('Error fetching budget alerts', {
+      error: error.message,
+      userId: req.user.id,
+    });
+
+    res.status(500).json({
+      error: 'Failed to fetch budget alerts',
+      message: error.message,
+    });
   }
-
-  const alerts = await db
-    .select({
-      id: budgetAlerts.id,
-      threshold: budgetAlerts.threshold,
-      period: budgetAlerts.period,
-      triggeredAt: budgetAlerts.triggeredAt,
-      metadata: budgetAlerts.metadata,
-      category: {
-        id: categories.id,
-        name: categories.name,
-        color: categories.color,
-      },
-      vault: {
-        id: vaults.id,
-        name: vaults.name,
-      },
-    })
-    .from(budgetAlerts)
-    .leftJoin(categories, eq(budgetAlerts.categoryId, categories.id))
-    .leftJoin(vaults, eq(budgetAlerts.vaultId, vaults.id))
-    .where(whereCondition)
-    .orderBy(desc(budgetAlerts.triggeredAt || budgetAlerts.id))
-    .limit(parseInt(limit));
-
-  return new ApiResponse(200, alerts, 'Budget alerts retrieved successfully').send(res);
-}));
+});
 
 /**
  * @swagger
- * /api/budget-alerts/rules:
+ * /budget-alerts/{alertId}:
  *   get:
- *     summary: Get user's budget rules
- *     tags: [Budget Rules]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: List of budget rules
- */
-router.get('/rules', asyncHandler(async (req, res) => {
-  const userId = req.user.id;
-
-  const rules = await db
-    .select({
-      id: budgetRules.id,
-      name: budgetRules.name,
-      description: budgetRules.description,
-      ruleType: budgetRules.ruleType,
-      condition: budgetRules.condition,
-      threshold: budgetRules.threshold,
-      period: budgetRules.period,
-      notificationType: budgetRules.notificationType,
-      isActive: budgetRules.isActive,
-      lastTriggered: budgetRules.lastTriggered,
-      metadata: budgetRules.metadata,
-      createdAt: budgetRules.createdAt,
-      category: {
-        id: categories.id,
-        name: categories.name,
-        color: categories.color,
-      },
-    })
-    .from(budgetRules)
-    .leftJoin(categories, eq(budgetRules.categoryId, categories.id))
-    .where(and(eq(budgetRules.userId, userId), eq(budgetRules.isActive, true)))
-    .orderBy(desc(budgetRules.createdAt));
-
-  return new ApiResponse(200, rules, 'Budget rules retrieved successfully').send(res);
-}));
-
-/**
- * @swagger
- * /api/budget-alerts/rules:
- *   post:
- *     summary: Create a new budget rule
- *     tags: [Budget Rules]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [categoryId, name, ruleType, threshold, period, notificationType]
- *             properties:
- *               categoryId:
- *                 type: string
- *               name:
- *                 type: string
- *               description:
- *                 type: string
- *               ruleType:
- *                 type: string
- *                 enum: [percentage, amount, frequency]
- *               condition:
- *                 type: object
- *               threshold:
- *                 type: number
- *               period:
- *                 type: string
- *                 enum: [daily, weekly, monthly, yearly]
- *               notificationType:
- *                 type: string
- *                 enum: [email, push, in_app]
- *     responses:
- *       201:
- *         description: Budget rule created successfully
- */
-router.post('/rules', asyncHandler(async (req, res) => {
-  const userId = req.user.id;
-  const {
-    categoryId,
-    name,
-    description,
-    ruleType,
-    condition = {},
-    threshold,
-    period,
-    notificationType
-  } = req.body;
-
-  // Validate required fields
-  if (!categoryId || !name || !ruleType || !threshold || !period || !notificationType) {
-    throw new AppError(400, 'Missing required fields');
-  }
-
-  // Validate category belongs to user
-  const [category] = await db
-    .select()
-    .from(categories)
-    .where(and(eq(categories.id, categoryId), eq(categories.userId, userId)));
-
-  if (!category) {
-    throw new AppError(404, 'Category not found');
-  }
-
-  const newRule = await db.insert(budgetRules).values({
-    userId,
-    categoryId,
-    name,
-    description,
-    ruleType,
-    condition,
-    threshold: threshold.toString(),
-    period,
-    notificationType,
-  }).returning();
-
-  return new ApiResponse(201, newRule[0], 'Budget rule created successfully').send(res);
-}));
-
-/**
- * @swagger
- * /api/budget-alerts/rules/{id}:
- *   put:
- *     summary: Update a budget rule
- *     tags: [Budget Rules]
+ *     summary: Get a specific budget alert
+ *     tags: [Budget Alerts]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: path
- *         name: id
- *         required: true
+ *         name: alertId
  *         schema:
  *           type: string
+ *           format: uuid
+ *         required: true
+ *     responses:
+ *       200:
+ *         description: Budget alert details
+ *       404:
+ *         description: Alert not found
+ */
+router.get('/:alertId', protect, param('alertId').isUUID('all'), async (req, res) => {
+  try {
+    const { alertId } = req.params;
+
+    const alert = await db.query.budgetAlerts.findFirst({
+      where: and(
+        eq(budgetAlerts.id, alertId),
+        eq(budgetAlerts.userId, req.user.id)
+      ),
+    });
+
+    if (!alert) {
+      return res.status(404).json({
+        error: 'Budget alert not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: alert,
+    });
+  } catch (error) {
+    logger.error('Error fetching budget alert', {
+      error: error.message,
+      userId: req.user.id,
+    });
+
+    res.status(500).json({
+      error: 'Failed to fetch budget alert',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /budget-alerts/{alertId}:
+ *   patch:
+ *     summary: Update a budget alert
+ *     tags: [Budget Alerts]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: alertId
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *         required: true
  *     requestBody:
  *       required: true
  *       content:
@@ -223,176 +325,148 @@ router.post('/rules', asyncHandler(async (req, res) => {
  *           schema:
  *             type: object
  *             properties:
- *               name:
- *                 type: string
- *               description:
- *                 type: string
  *               threshold:
  *                 type: number
+ *               thresholdPercentage:
+ *                 type: number
+ *               scope:
+ *                 type: string
  *               isActive:
  *                 type: boolean
- *               notificationType:
- *                 type: string
- *                 enum: [email, push, in_app]
+ *               channels:
+ *                 type: array
+ *                 items:
+ *                   type: string
  *     responses:
  *       200:
- *         description: Budget rule updated successfully
+ *         description: Budget alert updated
+ *       404:
+ *         description: Alert not found
  */
-router.put('/rules/:id', asyncHandler(async (req, res) => {
-  const userId = req.user.id;
-  const ruleId = req.params.id;
-  const updates = req.body;
+router.patch('/:alertId', protect, param('alertId').isUUID('all'), async (req, res) => {
+  try {
+    const { alertId } = req.params;
+    const { threshold, thresholdPercentage, scope, isActive, channels } = req.body;
 
-  // Validate rule belongs to user
-  const [existingRule] = await db
-    .select()
-    .from(budgetRules)
-    .where(and(eq(budgetRules.id, ruleId), eq(budgetRules.userId, userId)));
+    const alert = await db.query.budgetAlerts.findFirst({
+      where: and(
+        eq(budgetAlerts.id, alertId),
+        eq(budgetAlerts.userId, req.user.id)
+      ),
+    });
 
-  if (!existingRule) {
-    throw new AppError(404, 'Budget rule not found');
+    if (!alert) {
+      return res.status(404).json({
+        error: 'Budget alert not found',
+      });
+    }
+
+    const updateData = {};
+    if (threshold !== undefined) updateData.threshold = threshold;
+    if (thresholdPercentage !== undefined) updateData.thresholdPercentage = thresholdPercentage;
+    if (scope !== undefined) updateData.scope = scope;
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (channels !== undefined) updateData.notificationChannels = channels;
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({
+        error: 'No fields to update',
+      });
+    }
+
+    const [updated] = await db
+      .update(budgetAlerts)
+      .set({
+        ...updateData,
+        updatedAt: new Date(),
+      })
+      .where(eq(budgetAlerts.id, alertId))
+      .returning();
+
+    logger.info('Budget alert updated', {
+      userId: req.user.id,
+      alertId,
+    });
+
+    res.json({
+      success: true,
+      data: updated,
+    });
+  } catch (error) {
+    logger.error('Error updating budget alert', {
+      error: error.message,
+      userId: req.user.id,
+    });
+
+    res.status(500).json({
+      error: 'Failed to update budget alert',
+      message: error.message,
+    });
   }
-
-  // Convert threshold to string if provided
-  if (updates.threshold) {
-    updates.threshold = updates.threshold.toString();
-  }
-
-  const updatedRule = await db
-    .update(budgetRules)
-    .set({ ...updates, updatedAt: new Date() })
-    .where(eq(budgetRules.id, ruleId))
-    .returning();
-
-  return new ApiResponse(200, updatedRule[0], 'Budget rule updated successfully').send(res);
-}));
+});
 
 /**
  * @swagger
- * /api/budget-alerts/rules/{id}:
+ * /budget-alerts/{alertId}:
  *   delete:
- *     summary: Delete a budget rule
- *     tags: [Budget Rules]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Budget rule deleted successfully
- */
-router.delete('/rules/:id', asyncHandler(async (req, res) => {
-  const userId = req.user.id;
-  const ruleId = req.params.id;
-
-  // Validate rule belongs to user
-  const [existingRule] = await db
-    .select()
-    .from(budgetRules)
-    .where(and(eq(budgetRules.id, ruleId), eq(budgetRules.userId, userId)));
-
-  if (!existingRule) {
-    throw new AppError(404, 'Budget rule not found');
-  }
-
-  await db.delete(budgetRules).where(eq(budgetRules.id, ruleId));
-
-  return new ApiResponse(200, null, 'Budget rule deleted successfully').send(res);
-}));
-
-/**
- * @swagger
- * /api/budget-alerts/{id}/dismiss:
- *   post:
- *     summary: Dismiss a budget alert
+ *     summary: Delete a budget alert
  *     tags: [Budget Alerts]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: path
- *         name: id
- *         required: true
+ *         name: alertId
  *         schema:
  *           type: string
+ *           format: uuid
+ *         required: true
  *     responses:
  *       200:
- *         description: Alert dismissed successfully
+ *         description: Budget alert deleted
+ *       404:
+ *         description: Alert not found
  */
-router.post('/:id/dismiss', asyncHandler(async (req, res) => {
-  const userId = req.user.id;
-  const alertId = req.params.id;
+router.delete('/:alertId', protect, param('alertId').isUUID('all'), async (req, res) => {
+  try {
+    const { alertId } = req.params;
 
-  // Validate alert belongs to user
-  const [existingAlert] = await db
-    .select()
-    .from(budgetAlerts)
-    .where(and(eq(budgetAlerts.id, alertId), eq(budgetAlerts.userId, userId)));
+    const alert = await db.query.budgetAlerts.findFirst({
+      where: and(
+        eq(budgetAlerts.id, alertId),
+        eq(budgetAlerts.userId, req.user.id)
+      ),
+    });
 
-  if (!existingAlert) {
-    throw new AppError(404, 'Budget alert not found');
+    if (!alert) {
+      return res.status(404).json({
+        error: 'Budget alert not found',
+      });
+    }
+
+    await db
+      .delete(budgetAlerts)
+      .where(eq(budgetAlerts.id, alertId));
+
+    logger.info('Budget alert deleted', {
+      userId: req.user.id,
+      alertId,
+    });
+
+    res.json({
+      success: true,
+      message: 'Budget alert deleted',
+    });
+  } catch (error) {
+    logger.error('Error deleting budget alert', {
+      error: error.message,
+      userId: req.user.id,
+    });
+
+    res.status(500).json({
+      error: 'Failed to delete budget alert',
+      message: error.message,
+    });
   }
-
-  // Mark as dismissed by updating metadata
-  const updatedAlert = await db
-    .update(budgetAlerts)
-    .set({
-      metadata: {
-        ...existingAlert.metadata,
-        dismissed: true,
-        dismissedAt: new Date().toISOString()
-      }
-    })
-    .where(eq(budgetAlerts.id, alertId))
-    .returning();
-
-  return new ApiResponse(200, updatedAlert[0], 'Budget alert dismissed successfully').send(res);
-}));
-
-/**
- * @swagger
- * /api/budget-alerts/test:
- *   post:
- *     summary: Test budget alert system (development only)
- *     tags: [Budget Alerts]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [categoryId, amount]
- *             properties:
- *               categoryId:
- *                 type: string
- *               amount:
- *                 type: number
- *     responses:
- *       200:
- *         description: Test alert triggered
- */
-router.post('/test', asyncHandler(async (req, res) => {
-  const userId = req.user.id;
-  const { categoryId, amount } = req.body;
-
-  // Simulate expense data for testing
-  const testExpense = {
-    id: 'test-expense-id',
-    userId,
-    categoryId,
-    amount,
-    date: new Date()
-  };
-
-  // Trigger budget checking
-  await budgetService.checkBudgetAfterExpense(testExpense);
-
-  return new ApiResponse(200, null, 'Budget alert test completed').send(res);
-}));
+});
 
 export default router;
