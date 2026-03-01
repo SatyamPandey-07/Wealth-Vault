@@ -254,6 +254,24 @@ export const goals = pgTable('goals', {
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+// Goal Contribution Line Items - Immutable per-goal audit trail for precise progress
+export const goalContributionLineItems = pgTable('goal_contribution_line_items', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    goalId: uuid('goal_id').references(() => goals.id, { onDelete: 'cascade' }).notNull(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    amountCents: integer('amount_cents').notNull(),
+    rawAmount: numeric('raw_amount', { precision: 12, scale: 2 }).notNull(),
+    currency: text('currency').default('USD').notNull(),
+    entryType: text('entry_type').default('contribution').notNull(), // contribution, adjustment, reconciliation
+    description: text('description'),
+    idempotencyKey: text('idempotency_key').unique(),
+    sourceExpenseId: uuid('source_expense_id').references(() => expenses.id, { onDelete: 'set null' }),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 // Device Sessions Table for token management
 export const deviceSessions = pgTable('device_sessions', {
     id: uuid('id').defaultRandom().primaryKey(),
@@ -516,6 +534,7 @@ export const usersRelations = relations(users, ({ many }) => ({
     categories: many(categories),
     expenses: many(expenses),
     goals: many(goals),
+    goalContributionLineItems: many(goalContributionLineItems),
     deviceSessions: many(deviceSessions),
     rbacAuditLogs: many(rbacAuditLogs),
     auditLogs: many(auditLogs),
@@ -532,6 +551,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
     categories: many(categories),
     expenses: many(expenses),
     goals: many(goals),
+    goalContributionLineItems: many(goalContributionLineItems),
     rbacRoles: many(rbacRoles),
     rbacPermissions: many(rbacPermissions),
     rbacAuditLogs: many(rbacAuditLogs),
@@ -671,7 +691,26 @@ export const goalsRelations = relations(goals, ({ one }) => ({
     }),
     category: one(categories, {
         fields: [goals.categoryId],
+        references: [categories.id],
+    }),
+}));
+
+export const goalContributionLineItemsRelations = relations(goalContributionLineItems, ({ one }) => ({
+    goal: one(goals, {
+        fields: [goalContributionLineItems.goalId],
         references: [goals.id],
+    }),
+    tenant: one(tenants, {
+        fields: [goalContributionLineItems.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [goalContributionLineItems.userId],
+        references: [users.id],
+    }),
+    sourceExpense: one(expenses, {
+        fields: [goalContributionLineItems.sourceExpenseId],
+        references: [expenses.id],
     }),
 }));
 
