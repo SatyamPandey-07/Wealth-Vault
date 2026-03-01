@@ -392,11 +392,142 @@ frontend/
 
 ## 🚀 Deployment
 
-### Vercel (Recommended)
+This project can be deployed in several ways depending on your infrastructure and operational needs.
+
+### 1. Docker + Nginx (Production, Recommended)
+
+For a full-stack deployment (frontend, backend, and database) on your own infrastructure or a VM:
+
+- Use the provided Docker configuration and compose files:
+  - `docker-compose.yml` (development)
+  - `docker-compose.prod.yml` (production)
+  - `backend/Dockerfile`, `frontend/Dockerfile`
+- Use Nginx as an HTTPS reverse proxy in front of the app:
+  - `nginx/nginx.conf`
+  - `nginx/ssl/` (place certificates here)
+
+High-level production steps:
+
+1. Review the full Docker documentation: [DOCKER_GUIDE.md](DOCKER_GUIDE.md)
+2. Copy `.env.prod.example` to `.env.prod` (or similar) and set strong secrets and production URLs
+3. Configure Nginx and SSL certificates (see [nginx/README.md](nginx/README.md))
+4. Run the stack:
+  ```bash
+  docker-compose -f docker-compose.prod.yml up -d
+  ```
+5. Access the app via your Nginx HTTPS endpoint (for example, `https://yourdomain.com`)
+
+### 2. Frontend on Vercel / Static Hosting
+
+You can deploy the frontend as a static site to Vercel, Netlify, Cloudflare Pages, or similar platforms. The backend must be deployed separately (see the next section).
+
+#### Frontend build
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+This produces a static build in `frontend/dist`.
+
+#### Vercel example
 
 1. Connect your GitHub repository to Vercel
-2. Set environment variables in the Vercel dashboard
-3. Deploy automatically on push to `main` branch
+2. Set build settings:
+  - Build command: `npm run build`
+  - Output directory: `dist`
+3. Configure environment variables in the Vercel dashboard, for example:
+  - `VITE_API_URL=https://api.yourdomain.com`
+4. Deploy automatically on push to `main` (or your chosen branch)
+
+The same build output can be served by other static hosts (Netlify, Cloudflare Pages, S3 + CloudFront) by uploading `frontend/dist` and configuring SPA-style routing.
+
+### 3. Backend on Container Platforms
+
+The backend is a Node.js service that can be deployed as a container to platforms like:
+
+- Render, Railway, Fly.io
+- AWS ECS/Fargate, AWS App Runner
+- Azure App Service (for Containers)
+- Google Cloud Run or similar
+
+Typical steps:
+
+1. Build the backend image using `backend/Dockerfile`:
+  ```bash
+  cd backend
+  docker build -t wealth-vault-backend:latest .
+  ```
+2. Push the image to your container registry (Docker Hub, ECR, ACR, GCR, etc.)
+3. Create a service in your platform of choice, exposing port `5000`
+4. Configure environment variables (see next section) and health checks on `/api/health`
+5. Point your frontend `VITE_API_URL` to the backend URL (for example, `https://api.yourdomain.com`)
+
+### 4. Production Environment Configuration
+
+For a secure production setup, configure at minimum the following:
+
+**Backend (examples):**
+
+- `NODE_ENV=production`
+- `PORT=5000`
+- `DATABASE_URL` — connection string to your managed PostgreSQL instance
+- `DIRECT_URL` — direct DB URL for migrations/maintenance
+- `JWT_SECRET` — long, random secret key
+- `JWT_EXPIRE` — token lifetime (for example, `24h`)
+- `FRONTEND_URL` — public URL of the frontend (for example, `https://yourdomain.com`)
+- `REDIS_URL` — Redis instance URL (for caching, if used)
+- `GEMINI_API_KEY` — AI provider key (if using AI features)
+- `SENDGRID_API_KEY` or other email provider keys
+
+**Frontend (examples):**
+
+- `VITE_API_URL` — public URL of the backend API (for example, `https://api.yourdomain.com`)
+- `VITE_DEBUG` — set to `false` in production
+
+Refer to [DOCKER_GUIDE.md](DOCKER_GUIDE.md) and `backend/.env.example` for a more complete list of environment variables and their roles.
+
+### 5. SSL / HTTPS Configuration
+
+For production, always terminate HTTPS in front of the application (for example, using Nginx, a cloud load balancer, or your hosting provider’s TLS termination).
+
+Using the provided Nginx setup:
+
+1. Obtain certificates from a trusted CA (for example, Let’s Encrypt) or generate self-signed certificates for testing
+2. Place your certificates in `nginx/ssl/` (for example, `cert.pem`, `private.key`)
+3. Update `nginx/nginx.conf` with your domain and certificate paths
+4. Mount the Nginx config and SSL directory in `docker-compose.prod.yml` as documented in [nginx/README.md](nginx/README.md)
+5. Expose port `443` from the Nginx container and route traffic to the backend/frontend services
+
+If you are deploying to a managed platform (for example, Vercel, Netlify, Cloudflare, AWS ALB), you can usually enable HTTPS directly in that platform’s dashboard without managing certificates manually.
+
+### 6. Monitoring, Logging, and Scaling
+
+To operate Wealth Vault reliably in production, set up basic observability and scaling:
+
+**Logging:**
+
+- Collect container logs (`docker-compose logs -f` or platform log streams)
+- Centralize logs using your cloud provider’s logging service or a stack like ELK/EFK
+
+**Health checks:**
+
+- Use the backend health endpoint at `/api/health` for container, load balancer, or uptime monitoring
+
+**Metrics and monitoring:**
+
+- Monitor CPU, memory, and response times for backend containers
+- Track database health (connections, slow queries, storage)
+- Optionally integrate with Prometheus/Grafana or your cloud provider’s monitoring tools
+
+**Scaling:**
+
+- Scale backend instances horizontally (increase replica count) when CPU or latency is high
+- Ensure the database and Redis (if used) are sized appropriately and can handle increased connections
+- For Docker Swarm/Kubernetes, configure resource limits/requests and autoscaling based on metrics
+
+These practices help ensure smooth, secure, and predictable production deployments across different platforms.
 
 ---
 
