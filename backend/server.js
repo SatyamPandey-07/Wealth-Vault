@@ -333,6 +333,7 @@ app.use("/api/debts", userLimiter, debtRoutes);
 app.use("/api/wallets", userLimiter, walletRoutes);
 app.use("/api/fx", userLimiter, fxRoutes);
 app.use("/api/forecasts", userLimiter, forecastRoutes);
+app.use("/api/monte-carlo", userLimiter, monteCarloRoutes);
 app.use("/api/gemini", aiLimiter, geminiRouter);
 app.use("/api/currencies", userLimiter, currenciesRoutes);
 app.use("/api/audit", userLimiter, auditRoutes);
@@ -403,6 +404,7 @@ const PORT = process.env.PORT || 5000;
 if (process.env.NODE_ENV !== 'test') {
   cascadeMonitorJob.start();
   topologyGarbageCollector.start();
+  wealthSimulationJob.start();
   app.listen(PORT, () => {
     logInfo('Server started successfully', {
       port: PORT,
@@ -422,6 +424,7 @@ if (process.env.NODE_ENV !== 'test') {
     scheduleMonthlyReports();
     scheduleWeeklyHabitDigest();
     scheduleTaxReminders();
+    scheduleRecoveryExpirationJob();
     subscriptionMonitor.initialize();
     fxRateSync.start();
     valuationUpdater.start();
