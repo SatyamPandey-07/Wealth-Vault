@@ -13,6 +13,7 @@ import { connectRedis } from "./config/redis.js";
 import { scheduleCleanup } from "./jobs/tokenCleanup.js";
 import { initializeUploads } from "./middleware/fileUpload.js";
 import outboxDispatcher from "./jobs/outboxDispatcher.js";
+import certificateRotation from "./jobs/certificateRotation.js";
 import "./services/sagaDefinitions.js"; // Register saga definitions
 import { createFileServerRoute } from "./middleware/secureFileServer.js";
 import { requestIdMiddleware, requestLogger, errorLogger, analyticsMiddleware } from "./middleware/requestLogger.js";
@@ -37,9 +38,24 @@ import healthRoutes from "./routes/health.js";
 import performanceRoutes from "./routes/performance.js";
 import tenantRoutes from "./routes/tenants.js";
 import auditRoutes from "./routes/audit.js";
+import servicesRoutes from "./routes/services.js";
+import dbRouterRoutes from "./routes/dbRouter.js";
+
+// Import DB Router
+import { initializeDBRouter } from "./services/dbRouterService.js";
+import { attachDBConnection, dbRoutingErrorHandler } from "./middleware/dbRouting.js";
 
 // Load environment variables
 dotenv.config();
+
+// Initialize DB Router (with read/write split)
+initializeDBRouter()
+  .then(() => {
+    console.log('🔄 DB Router initialized (read/write split enabled)');
+  })
+  .catch(err => {
+    console.warn('⚠️ DB Router initialization failed, using primary only:', err.message);
+  });
 
 // Initialize Redis connection
 connectRedis().catch(err => {
@@ -52,6 +68,10 @@ scheduleCleanup();
 // Start outbox event dispatcher
 outboxDispatcher.start();
 console.log('📤 Outbox dispatcher started');
+
+// Start certificate rotation job
+certificateRotation.start();
+console.log('🔐 Certificate rotation job started');
 
 // Initiliz uplod directorys
 initializeUploads().catch(err => {
@@ -125,6 +145,12 @@ app.use(sanitizeInput);
 app.use(responseWrapper);
 app.use(paginationMiddleware());
 
+// Database routing middleware (read/write split)
+app.use(attachDBConnection({
+  enableSessionTracking: true,
+  preferReplicas: process.env.PREFER_REPLICAS !== 'false'
+}));
+
 // Logng and monitrng midlware
 app.use(requestIdMiddleware);
 app.use(requestLogger);
@@ -183,6 +209,7 @@ app.use("/api/health", healthRoutes);
 app.use("/api/performance", userLimiter, performanceRoutes);
 app.use("/api/tenants", userLimiter, tenantRoutes);
 app.use("/api/audit", userLimiter, auditRoutes);
+app.use("/api/db-router", userLimiter, dbRouterRoutes);
 
 // Secur fil servr for uploddd fils
 app.use("/uploads", createFileServerRoute());
@@ -201,6 +228,9 @@ app.use(notFound);
 
 // Add error logging middleware
 app.use(errorLogger);
+
+// DB routing error handler (must be before general error handler)
+app.use(dbRoutingErrorHandler());
 
 // Centralized error handling middleware (must be last)
 app.use(errorHandler);
