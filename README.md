@@ -5,8 +5,14 @@
 
 ## 📊 Badges
 
-![Visitors](https://visitor-badge.glitch.me/badge?page_id=csxark.Wealth-Vault)
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
+
+
+![GitHub stars](https://img.shields.io/github/stars/csxark/Wealth-Vault?style=social)
+![GitHub forks](https://img.shields.io/github/forks/csxark/Wealth-Vault?style=social)
+![Visitors](https://visitor-badge.laobi.icu/badge?page_id=csxark.Wealth-Vault)
+![GitHub issues](https://img.shields.io/github/issues/csxark/Wealth-Vault)
+![License](https://img.shields.io/github/license/csxark/Wealth-Vault)
+
 
 ---
 
@@ -21,7 +27,7 @@ Wealth Vault guides users through a **simple three-step flow**:
    </div>
 
 2. **Authentication (Sign Up / Login)**  
-   Secure user registration and login powered by **Supabase Auth**.
+   Secure user registration and login powered by **JWT Authentication**.
    <div align="center">
      <img src="./assets/Auth.png" alt="Dashboard" width="80%" style="border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.2);" />
    </div>
@@ -72,11 +78,15 @@ Wealth Vault goes beyond simple expense tracking. It focuses on **behavior-aware
 | ------------ | --------------------------- |
 | Frontend     | React 18, TypeScript, Vite  |
 | Styling      | Tailwind CSS                |
-| Backend & DB | Supabase (PostgreSQL)       |
-| Auth         | Supabase Auth               |
+| Backend      | Node.js, Express.js         |
+| Database     | PostgreSQL                  |
+| ORM          | Drizzle ORM                 |
+| Auth         | JWT Authentication          |
 | Charts       | Chart.js, React-Chartjs-2   |
 | Icons        | Lucide React                |
 | QR Scanning  | @zxing/browser              |
+| AI           | Google Gemini API           |
+| Caching      | Redis                       |
 
 ---
 
@@ -167,34 +177,54 @@ This creates `.env` files in both `backend/` and `frontend/` directories with te
 
 1. **Backend environment:**
 
-   - Copy `backend\env.example` to `backend\.env`
+   - Copy `backend\.env.example` to `backend\.env`
    - Edit `backend\.env` and update:
      ```
-     DATABASE_URL=your_supabase_database_url
-     DIRECT_URL=your_supabase_direct_url
-     JWT_SECRET=your_secret_key_here
+     DATABASE_URL=postgresql://username:password@localhost:5432/wealth_vault
+     DIRECT_URL=postgresql://username:password@localhost:5432/wealth_vault
+     JWT_SECRET=your-super-secret-jwt-key-here
+     PORT=5000
+     NODE_ENV=development
+     FRONTEND_URL=http://localhost:3000
      ```
 
 2. **Frontend environment:**
-   - Copy `frontend\env.example` to `frontend\.env`
+   - Copy `frontend\.env.example` to `frontend\.env`
    - Edit `frontend\.env` and update:
      ```
-     VITE_SUPABASE_URL=your_supabase_project_url
-     VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-     VITE_API_URL=http://localhost:5000/api
+     VITE_API_URL=http://localhost:5000
      ```
 
-> **📝 Note:** Get your Supabase credentials from your [Supabase Dashboard](https://supabase.com/dashboard) → Project Settings → API
+> **📝 Note:** For PostgreSQL setup, you can use a local PostgreSQL instance or a cloud provider like AWS RDS, Google Cloud SQL, or Azure Database.
 
-#### Step 3: Set Up Database (if using Supabase)
+#### Step 3: Set Up Database
 
-The application uses Supabase (PostgreSQL) for data storage. Make sure:
+The application uses PostgreSQL with Drizzle ORM for data storage. You have two options:
 
-- You have created a Supabase project
-- Your database URL and credentials are configured in `backend\.env`
-- Row Level Security (RLS) policies are set up (see project documentation)
+**Option A: Local PostgreSQL**
+- Install PostgreSQL locally
+- Create a database named `wealth_vault`
+- Update the `DATABASE_URL` in `backend\.env`
 
-#### Step 4: Start the Application
+**Option B: Docker PostgreSQL (Recommended for development)**
+```bash
+# Start PostgreSQL with Docker
+docker run --name wealth-vault-db -e POSTGRES_DB=wealth_vault -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password -p 5432:5432 -d postgres:16-alpine
+```
+
+**Option C: Cloud PostgreSQL**
+- Use services like AWS RDS, Google Cloud SQL, Azure Database, or Supabase
+- Update the `DATABASE_URL` in `backend\.env` with your cloud database URL
+
+#### Step 4: Run Database Migrations
+
+```bash
+cd backend
+npm run db:push  # Push schema to database
+npm run db:migrate  # Run any pending migrations
+```
+
+#### Step 5: Start the Application
 
 **Start both frontend and backend together:**
 
@@ -205,7 +235,7 @@ npm run dev
 **Or start individually:**
 
 ```bash
-#insatll this package first
+#install this package first
 npm install concurrently --save-dev
 # Backend only (runs on port 5000)
 npm run dev:backend
@@ -268,14 +298,14 @@ Includes:
 
 The frontend and backend are fully synchronized with matching data models:
 
-- **User Management**: Authentication handled via Supabase Auth
+- **User Management**: JWT-based authentication with secure token handling
 - **Expense Tracking**: Real-time expense management with categories
 - **Goal Management**: Financial goals with progress tracking
 - **Category Management**: Hierarchical categories with budgets
 
 ## Database Schema
 
-The app uses Supabase (PostgreSQL) with the following main tables:
+The app uses PostgreSQL with Drizzle ORM and the following main tables:
 
 - **profiles**: User profile information
 - **transactions**: Financial transactions with spending categories
@@ -312,11 +342,26 @@ All tables have Row Level Security (RLS) enabled to ensure users can only access
 
 ## Environment Variables
 
-| Variable                 | Description                   | Required |
-| ------------------------ | ----------------------------- | -------- |
-| `VITE_SUPABASE_URL`      | Your Supabase project URL     | Yes      |
-| `VITE_SUPABASE_ANON_KEY` | Your Supabase anon/public key | Yes      |
-| `VITE_DEBUG`             | Enable debug mode             | No       |
+### Backend Variables
+
+| Variable          | Description                          | Required |
+| ----------------- | ------------------------------------ | -------- |
+| `DATABASE_URL`    | PostgreSQL connection string         | Yes      |
+| `DIRECT_URL`      | Direct PostgreSQL connection string  | Yes      |
+| `JWT_SECRET`      | Secret key for JWT signing           | Yes      |
+| `JWT_EXPIRE`      | JWT token expiration time            | No       |
+| `PORT`            | Backend server port                  | No       |
+| `NODE_ENV`        | Environment (development/production) | No       |
+| `FRONTEND_URL`    | Frontend application URL             | No       |
+| `REDIS_URL`       | Redis connection string              | No       |
+| `GEMINI_API_KEY`  | Google Gemini AI API key             | No       |
+
+### Frontend Variables
+
+| Variable      | Description              | Required |
+| ------------- | ------------------------ | -------- |
+| `VITE_API_URL`| Backend API URL          | Yes      |
+| `VITE_DEBUG`  | Enable debug mode        | No       |
 
 ## Development
 
@@ -361,23 +406,25 @@ frontend/
 
 1. **Environment Variables Not Loading**
 
-   - Ensure `.env` file is in the `frontend` directory
+   - Ensure `.env` file is in the correct directory (`backend/` for backend, `frontend/` for frontend)
    - Restart the development server after adding variables
+   - Check variable naming (no spaces around `=`)
 
 2. **Database Connection Errors**
 
-   - Verify the Supabase URL and key are correct
-   - Check if the database schema is properly set up
-   - Ensure RLS policies are configured
+   - Verify the PostgreSQL connection string is correct
+   - Check if PostgreSQL server is running and accessible
+   - Ensure database and user exist with proper permissions
+   - Run `npm run db:push` to ensure schema is up to date
 
 3. **Authentication Issues**
-   - Verify Supabase Auth is enabled
-   - Check Site URL configuration in Supabase
-   - Clear browser cache and local storage
+   - Verify `JWT_SECRET` is set and strong (at least 32 characters)
+   - Check token expiration settings
+   - Clear browser local storage if experiencing persistent auth issues
 
 ### Debug Mode
 
-Enable debug mode by setting `VITE_DEBUG=true` to see detailed console logs.
+Enable debug mode by setting `VITE_DEBUG=true` in frontend environment to see detailed console logs.
 
 ---
 
