@@ -14,6 +14,7 @@ import crypto from 'crypto';
 import db from '../config/db.js';
 import { tenants, tenantMembers, users, rbacRoles } from '../db/schema.js';
 import { initializeTenantRbac, assignRolesToMember } from './rbacService.js';
+import { getDefaultResidencyPolicy, queueCrossRegionReplication } from './multiRegionService.js';
 import { logger } from '../utils/logger.js';
 
 const syncMemberRbacRole = async (tenantId, tenantMemberId, roleSlug, actorUserId) => {
@@ -51,7 +52,9 @@ export const createTenant = async (data) => {
       slug = generateSlug(name),
       tier = 'free',
       maxMembers = 5,
-      maxProjects = 3
+      maxProjects = 3,
+      homeRegion = process.env.APP_REGION || 'us-east-1',
+      residencyPolicy = null
     } = data;
 
     // Validate tenant owner exists
@@ -75,6 +78,15 @@ export const createTenant = async (data) => {
     }
 
     const tenantId = uuidv4();
+    const effectiveResidencyPolicy = {
+      ...getDefaultResidencyPolicy(homeRegion),
+      ...(residencyPolicy || {}),
+      homeRegion,
+      dr: {
+        ...getDefaultResidencyPolicy(homeRegion).dr,
+        ...(residencyPolicy?.dr || {})
+      }
+    };
 
     // Create tenant
     const [newTenant] = await db
@@ -88,7 +100,19 @@ export const createTenant = async (data) => {
         tier,
         maxMembers,
         maxProjects,
-        features: getTierFeatures(tier)
+        features: getTierFeatures(tier),
+        settings: {
+          currency: 'USD',
+          timezone: 'UTC',
+          language: 'en',
+          theme: 'auto',
+          multiRegion: {
+            enabled: true,
+            homeRegion,
+            residencyPolicy: effectiveResidencyPolicy,
+            createdAt: new Date().toISOString()
+          }
+        }
       })
       .returning();
 
@@ -97,7 +121,7 @@ export const createTenant = async (data) => {
       .insert(tenantMembers)
       .values({
         id: uuidv4(),
-        tenantId: tenantId,
+        tenantId,
         userId: ownerId,
         role: 'owner',
         status: 'active'
@@ -115,9 +139,30 @@ export const createTenant = async (data) => {
 
     await initializeTenantRbac(tenantId, ownerId, ownerMembership?.id || null);
 
+    await queueCrossRegionReplication({
+      tenant: newTenant,
+      aggregateType: 'tenant',
+      aggregateId: tenantId,
+      eventType: 'tenant.created',
+      payload: {
+        tenantId,
+        name: newTenant.name,
+        slug: newTenant.slug,
+        tier: newTenant.tier,
+        homeRegion,
+        residencyMode: effectiveResidencyPolicy.mode
+      },
+      dataClass: 'operational',
+      metadata: {
+        source: 'tenantService.createTenant'
+      }
+    });
+
     logger.info(`Tenant created: ${newTenant.name} (${tenantId})`, {
       tenantId,
-      ownerId
+      ownerId,
+      homeRegion,
+      residencyMode: effectiveResidencyPolicy.mode
     });
 
     return { tenant: newTenant, message: 'Tenant created successfully' };
@@ -542,7 +587,8 @@ export const createDefaultTenant = async (userId) => {
       name: tenantName,
       ownerId: userId,
       slug,
-      tier: 'free'
+      tier: 'free',
+      homeRegion: process.env.APP_REGION || 'us-east-1'
     });
 
     logger.info(`Default tenant created for new user`, {

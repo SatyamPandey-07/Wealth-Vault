@@ -10,6 +10,7 @@ import {
   rbacAuditLogs
 } from '../db/schema.js';
 import { logger } from '../utils/logger.js';
+import policyEngineService from './policyEngineService.js';
 
 const DEFAULT_PERMISSION_DEFINITIONS = [
   { key: '*', description: 'Full access to all tenant resources' },
@@ -22,6 +23,10 @@ const DEFAULT_PERMISSION_DEFINITIONS = [
   { key: 'rbac:role:manage', description: 'Manage RBAC roles' },
   { key: 'rbac:permission:manage', description: 'Manage RBAC permissions' },
   { key: 'rbac:assign', description: 'Assign RBAC roles to members' },
+  { key: 'audit:view', description: 'View audit logs' },
+  { key: 'audit:export', description: 'Export audit logs' },
+  { key: 'audit:alert:view', description: 'View security alerts' },
+  { key: 'audit:integrity:verify', description: 'Verify audit log integrity' },
   { key: 'expense:view', description: 'View expenses' },
   { key: 'expense:create', description: 'Create expenses' },
   { key: 'expense:update', description: 'Update expenses' },
@@ -60,7 +65,9 @@ const DEFAULT_ROLE_MODEL = [
     permissions: [
       'member:view',
       'expense:update',
-      'category:manage'
+      'category:manage',
+      'audit:view',
+      'audit:alert:view'
     ]
   },
   {
@@ -76,7 +83,9 @@ const DEFAULT_ROLE_MODEL = [
       'rbac:role:manage',
       'rbac:permission:manage',
       'rbac:assign',
-      'expense:delete'
+      'expense:delete',
+      'audit:export',
+      'audit:integrity:verify'
     ]
   },
   {
@@ -395,6 +404,8 @@ export const createTenantPermission = async ({ tenantId, key, description, actor
     changes: { key: normalizedKey, description: description || null }
   });
 
+  await policyEngineService.invalidateAuthorizationCache({ tenantId });
+
   return permission;
 };
 
@@ -537,6 +548,8 @@ export const createTenantRole = async ({ tenantId, name, slug, description, pare
     changes: { name, slug: normalizedSlug, parentRoleId, permissionKeys }
   });
 
+  await policyEngineService.invalidateAuthorizationCache({ tenantId });
+
   return role;
 };
 
@@ -612,6 +625,8 @@ export const updateTenantRole = async ({ tenantId, roleId, name, description, pa
     changes: { ...updatePayload, permissionKeys }
   });
 
+  await policyEngineService.invalidateAuthorizationCache({ tenantId });
+
   const [updatedRole] = await db
     .select()
     .from(rbacRoles)
@@ -668,6 +683,8 @@ export const deleteTenantRole = async ({ tenantId, roleId, actorUserId }) => {
     entityId: roleId,
     changes: { slug: role.slug }
   });
+
+  await policyEngineService.invalidateAuthorizationCache({ tenantId });
 
   return true;
 };
@@ -741,6 +758,8 @@ export const assignRolesToMember = async ({ tenantId, tenantMemberId, roleIds = 
     changes: { roleIds: uniqueRoleIds }
   });
 
+  await policyEngineService.invalidateAuthorizationCache({ tenantId });
+
   return true;
 };
 
@@ -773,6 +792,8 @@ export const setMemberCustomPermissions = async ({ tenantId, tenantMemberId, per
     entityId: tenantMemberId,
     changes: { permissions: normalizedPermissions }
   });
+
+  await policyEngineService.invalidateAuthorizationCache({ tenantId });
 
   return normalizedPermissions;
 };
