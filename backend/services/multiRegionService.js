@@ -1,8 +1,9 @@
 import { and, eq } from 'drizzle-orm';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/db.js';
-import { outboxEvents, tenants } from '../db/schema.js';
+import { auditLogs, outboxEvents, tenants } from '../db/schema.js';
 import { logger } from '../utils/logger.js';
+import { createAuditLog } from './auditLogService.js';
 
 const DEFAULT_HOME_REGION = process.env.APP_REGION || 'us-east-1';
 
@@ -10,8 +11,129 @@ const REGION_METRICS = {
   routedToHomeRegion: 0,
   regionMismatches: 0,
   residencyBlocks: 0,
+  regionValidationFailures: 0,
+  geoFenceBlocks: 0,
+  crossRegionAuditEvents: 0,
   replicationQueued: 0,
   replicationSkipped: 0
+};
+
+const isTruthy = (value) => String(value).toLowerCase() === 'true';
+
+export const validateRegionAccess = ({
+  tenant,
+  method,
+  path,
+  requestRegion,
+  dataClass = 'operational',
+  userRegion = null,
+  strictMode = true,
+  enforceGeoFence = isTruthy(process.env.ENABLE_GEO_FENCE_CHECKS || 'false')
+}) => {
+  const decision = buildRoutingDecision({ tenant, requestRegion, method });
+  const normalizedDataClass = String(dataClass || 'operational').toLowerCase();
+
+  if (!decision.allow && strictMode) {
+    REGION_METRICS.residencyBlocks += 1;
+    REGION_METRICS.regionValidationFailures += 1;
+    return {
+      ok: false,
+      code: 'REGION_POLICY_BLOCKED',
+      message: 'Cross-region request blocked by residency policy',
+      decision,
+      dataClass: normalizedDataClass,
+      geoFence: { enforced: enforceGeoFence, passed: true }
+    };
+  }
+
+  if (
+    decision.requestRegion !== decision.homeRegion &&
+    isDataClassRestricted(tenant, normalizedDataClass)
+  ) {
+    REGION_METRICS.residencyBlocks += 1;
+    REGION_METRICS.regionValidationFailures += 1;
+    return {
+      ok: false,
+      code: 'RESIDENCY_DATA_BLOCKED',
+      message: 'Residency-restricted data must remain in tenant home region',
+      decision,
+      dataClass: normalizedDataClass,
+      geoFence: { enforced: enforceGeoFence, passed: true }
+    };
+  }
+
+  if (enforceGeoFence && userRegion && userRegion !== decision.homeRegion) {
+    REGION_METRICS.geoFenceBlocks += 1;
+    REGION_METRICS.regionValidationFailures += 1;
+    return {
+      ok: false,
+      code: 'GEOFENCE_REGION_MISMATCH',
+      message: 'User location does not match tenant data residency region',
+      decision,
+      dataClass: normalizedDataClass,
+      geoFence: {
+        enforced: true,
+        passed: false,
+        userRegion,
+        expectedRegion: decision.homeRegion
+      }
+    };
+  }
+
+  return {
+    ok: true,
+    code: 'REGION_VALIDATION_PASSED',
+    message: 'Region validation passed',
+    decision,
+    dataClass: normalizedDataClass,
+    geoFence: {
+      enforced: enforceGeoFence,
+      passed: true,
+      userRegion: userRegion || null,
+      expectedRegion: decision.homeRegion
+    }
+  };
+};
+
+export const logRegionComplianceEvent = async ({
+  req,
+  validation,
+  statusCode,
+  outcome = 'failure',
+  extraMetadata = {}
+}) => {
+  if (!req?.tenant?.id || !validation?.decision) {
+    return null;
+  }
+
+  REGION_METRICS.crossRegionAuditEvents += 1;
+
+  return createAuditLog({
+    tenantId: req.tenant.id,
+    actorUserId: req.user?.id || null,
+    action: `compliance.region.${String(validation.code || 'event').toLowerCase()}`,
+    category: 'security',
+    resourceType: 'tenant_region_policy',
+    resourceId: req.tenant.id,
+    method: req.method,
+    path: req.originalUrl,
+    statusCode,
+    outcome,
+    severity: outcome === 'failure' ? 'high' : 'low',
+    ipAddress: req.ip,
+    userAgent: req.get?.('User-Agent') || req.headers?.['user-agent'] || null,
+    requestId: req.requestId || null,
+    metadata: {
+      homeRegion: validation.decision.homeRegion,
+      requestRegion: validation.decision.requestRegion,
+      reason: validation.decision.reason,
+      dataClass: validation.dataClass,
+      geoFence: validation.geoFence,
+      regionRouting: req.regionRouting || null,
+      ...extraMetadata
+    },
+    changes: {}
+  });
 };
 
 export const getDefaultResidencyPolicy = (homeRegion = DEFAULT_HOME_REGION) => ({
@@ -335,6 +457,36 @@ export const recordFailoverDrill = async ({ tenantId, actorUserId = null, notes 
 
 export const getRegionMetrics = () => ({ ...REGION_METRICS });
 
+export const getRegionComplianceDashboard = async ({ tenantId }) => {
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
+
+  if (!tenant) {
+    throw new Error('Tenant not found');
+  }
+
+  const { homeRegion, residencyPolicy } = extractTenantRegionConfig(tenant);
+
+  const securityEvents = await db
+    .select({ action: auditLogs.action, outcome: auditLogs.outcome })
+    .from(auditLogs)
+    .where(and(eq(auditLogs.tenantId, tenantId), eq(auditLogs.category, 'security')));
+
+  const blockedAttempts = securityEvents.filter(
+    (row) => row.outcome === 'failure' && String(row.action || '').startsWith('compliance.region.')
+  ).length;
+
+  return {
+    tenantId,
+    homeRegion,
+    residencyPolicy,
+    metrics: getRegionMetrics(),
+    auditSummary: {
+      totalSecurityAuditEvents: Number(securityEvents.length || 0),
+      blockedRegionAccessEvents: Number(blockedAttempts || 0)
+    }
+  };
+};
+
 export default {
   getDefaultResidencyPolicy,
   extractTenantRegionConfig,
@@ -345,5 +497,8 @@ export default {
   updateTenantResidencyPolicy,
   getTenantFailoverRunbook,
   recordFailoverDrill,
-  getRegionMetrics
+  getRegionMetrics,
+  validateRegionAccess,
+  logRegionComplianceEvent,
+  getRegionComplianceDashboard
 };

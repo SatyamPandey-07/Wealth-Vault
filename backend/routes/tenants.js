@@ -28,6 +28,7 @@ import {
 } from '../services/tenantService.js';
 import {
   extractTenantRegionConfig,
+  getRegionComplianceDashboard,
   getRegionMetrics,
   getTenantFailoverRunbook,
   recordFailoverDrill,
@@ -269,6 +270,33 @@ router.get(
       return res.status(500).json({
         success: false,
         message: error.message || 'Error fetching tenant residency profile'
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/tenants/:tenantId/residency/compliance
+ * Get tenant regional compliance dashboard
+ */
+router.get(
+  '/:tenantId/residency/compliance',
+  protect,
+  validateTenantAccess,
+  enforceTenantRegionRouting({ allowReadRedirect: false }),
+  async (req, res) => {
+    try {
+      const dashboard = await getRegionComplianceDashboard({ tenantId: req.params.tenantId });
+
+      return res.status(200).json({
+        success: true,
+        data: dashboard
+      });
+    } catch (error) {
+      logger.error('Error fetching tenant residency compliance dashboard:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || 'Error fetching tenant residency compliance dashboard'
       });
     }
   }
