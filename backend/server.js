@@ -15,6 +15,7 @@ import { scheduleCleanup } from "./jobs/tokenCleanup.js";
 import { initializeUploads } from "./middleware/fileUpload.js";
 import outboxDispatcher from "./jobs/outboxDispatcher.js";
 import certificateRotation from "./jobs/certificateRotation.js";
+import financialReconciliation from "./jobs/financialReconciliation.js";
 import "./services/sagaDefinitions.js"; // Register saga definitions
 import { createFileServerRoute } from "./middleware/secureFileServer.js";
 import { requestIdMiddleware, requestLogger, errorLogger, analyticsMiddleware } from "./middleware/requestLogger.js";
@@ -113,6 +114,10 @@ const startServer = async () => {
     // Start certificate rotation job
     certificateRotation.start();
     console.log('🔐 Certificate rotation job started');
+
+    // Start distributed financial reconciliation job
+    financialReconciliation.start();
+    console.log('🧮 Financial reconciliation job started');
 
     // Initialize upload directories
     try {

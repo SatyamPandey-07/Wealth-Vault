@@ -10,6 +10,8 @@ import cacheService from "../services/cacheService.js";
 import { routeCache, cacheInvalidation } from "../middleware/cache.js";
 import { executeQuery } from "../utils/queryOptimization.js";
 import { trackQuery } from "../utils/queryPerformanceTracker.js";
+import sagaCoordinator from "../services/sagaCoordinator.js";
+import distributedTransactionService from "../services/distributedTransactionService.js";
 
 const router = express.Router();
 
@@ -241,10 +243,22 @@ router.post(
     body("date").optional().isISO8601(),
   ],
   async (req, res) => {
+    let txLog = null;
+    let operationKey = null;
+
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty())
         return res.status(400).json({ success: false, errors: errors.array() });
+
+      const idempotencyKey = req.headers["idempotency-key"];
+
+      if (!idempotencyKey || String(idempotencyKey).trim().length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Idempotency-Key header is required for financial operations",
+        });
+      }
 
       const {
         amount,
@@ -259,6 +273,69 @@ router.post(
         notes,
         subcategory,
       } = req.body;
+
+      operationKey = distributedTransactionService.buildOperationKey({
+        tenantId: req.user.tenantId || req.user.id,
+        userId: req.user.id,
+        operation: "expense.create",
+        idempotencyKey: String(idempotencyKey).trim(),
+      });
+
+      const idempotencyLock = await distributedTransactionService.acquireIdempotencyLock({
+        tenantId: req.user.tenantId || req.user.id,
+        userId: req.user.id,
+        operation: "expense.create",
+        operationKey,
+        requestPayload: req.body,
+        resourceType: "expense",
+      });
+
+      if (!idempotencyLock.acquired) {
+        if (idempotencyLock.reason === "replay") {
+          res.setHeader("Idempotent-Replay", "true");
+          return res.status(idempotencyLock.record.responseCode || 200).json(
+            idempotencyLock.record.responseBody || {
+              success: true,
+              message: "Request replayed from idempotency store",
+            }
+          );
+        }
+
+        if (idempotencyLock.reason === "in_progress") {
+          return res.status(409).json({
+            success: false,
+            message: "An operation with this idempotency key is already in progress",
+          });
+        }
+
+        return res.status(409).json({
+          success: false,
+          message: "Idempotency key reuse with different payload is not allowed",
+        });
+      }
+
+      txLog = await distributedTransactionService.startDistributedTransaction({
+        tenantId: req.user.tenantId || req.user.id,
+        userId: req.user.id,
+        transactionType: "financial_expense_create",
+        operationKey,
+        payload: {
+          amount,
+          description,
+          category,
+          date,
+          paymentMethod,
+          location,
+          tags,
+          isRecurring,
+          recurringPattern,
+          notes,
+          subcategory,
+        },
+        timeoutMs: 30000,
+      });
+
+      await distributedTransactionService.markPrepared({ txLogId: txLog.id });
 
       // Verify category with tracking
       const [categoryDoc] = await trackQuery('expenses.verifyCategory', { userId: req.user.id })(async () => {
@@ -276,50 +353,107 @@ router.post(
           .json({ success: false, message: "Invalid category" });
       }
 
-      const [newExpense] = await trackQuery('expenses.create', { userId: req.user.id })(async () => {
-        return await db
-          .insert(expenses)
-          .values({
-            userId: req.user.id,
+      const sagaResult = await trackQuery('expenses.create', { userId: req.user.id })(async () => {
+        return await sagaCoordinator.startSaga({
+          sagaType: 'financial_expense_operation',
+          tenantId: req.user.tenantId || req.user.id,
+          payload: {
             tenantId: req.user.tenantId || req.user.id,
-            amount: amount.toString(),
+            userId: req.user.id,
+            amount,
             description,
             categoryId: category,
-            date: date ? new Date(date) : new Date(),
-            paymentMethod: paymentMethod || "other",
+            date: date ? new Date(date).toISOString() : new Date().toISOString(),
+            paymentMethod,
             location,
-            tags: tags || [],
-            isRecurring: isRecurring || false,
+            tags,
+            isRecurring,
             recurringPattern,
             notes,
             subcategory,
-          })
-          .returning();
+            idempotencyKey,
+            operationKey,
+          },
+          executeAsync: false,
+          timeoutMs: 25000,
+        });
       });
+
+      if (!sagaResult || sagaResult.status !== 'completed') {
+        throw new Error(sagaResult?.error || 'Financial operation saga failed');
+      }
+
+      const createdExpenseId = sagaResult.stepResults?.[0]?.expenseId;
+
+      if (!createdExpenseId) {
+        throw new Error('Saga completed without expense id');
+      }
 
       // Update category stats (async, don't block response necessarily, but good to wait)
       await updateCategoryStats(category);
 
       const expenseWithCategory = await db.query.expenses.findFirst({
-        where: eq(expenses.id, newExpense.id),
+        where: eq(expenses.id, createdExpenseId),
         with: {
           category: { columns: { name: true, color: true, icon: true } },
         },
       });
 
-      // Invalidate caches
-      await cacheService.invalidateExpenseCache(req.user.id, req.user.tenantId || req.user.id, newExpense.id);
+      await distributedTransactionService.commitDistributedTransaction({
+        txLogId: txLog.id,
+        result: {
+          sagaId: sagaResult.id,
+          expenseId: createdExpenseId,
+        },
+      });
 
-      res.status(201).json({
+      const responseBody = {
         success: true,
         message: "Expense created successfully",
         data: { expense: expenseWithCategory },
+      };
+
+      await distributedTransactionService.completeIdempotency({
+        operationKey,
+        statusCode: 201,
+        responseBody,
+        resourceType: "expense",
+        resourceId: createdExpenseId,
       });
+
+      // Invalidate caches
+      await cacheService.invalidateExpenseCache(req.user.id, req.user.tenantId || req.user.id, createdExpenseId);
+
+      res.status(201).json(responseBody);
     } catch (error) {
+      if (txLog?.id) {
+        await distributedTransactionService.markFailedTransaction({
+          txLogId: txLog.id,
+          errorMessage: error.message,
+        });
+      }
+
+      if (operationKey) {
+        await distributedTransactionService.failIdempotency({
+          operationKey,
+          statusCode: error.message?.toLowerCase().includes('timed out') ? 504 : 500,
+          responseBody: {
+            success: false,
+            message: error.message?.toLowerCase().includes('timed out')
+              ? "Financial operation timed out; reconciliation will verify final state"
+              : "Server error while creating expense",
+          },
+          reason: error.message,
+        });
+      }
+
       console.error("Create expense error:", error);
-      res.status(500).json({
+      const timeout = error.message?.toLowerCase().includes('timed out');
+      res.status(timeout ? 504 : 500).json({
         success: false,
-        message: "Server error while creating expense",
+        message: timeout
+          ? "Financial operation timed out; reconciliation will verify final state"
+          : "Server error while creating expense",
       });
     }
   }

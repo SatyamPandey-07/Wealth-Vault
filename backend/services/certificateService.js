@@ -1,8 +1,9 @@
-import { db } from '../config/db.js';
+import db from '../config/db.js';
 import { serviceIdentities, serviceCertificates, serviceAuthLogs } from '../db/schema.js';
 import { eq, and, lt, gt } from 'drizzle-orm';
 import crypto from 'crypto';
 import logger from '../utils/logger.js';
+import keyManager from '../utils/CryptographicKeyManager.js';
 
 /**
  * Certificate Service - Manages service identities and mTLS certificates
@@ -16,75 +17,10 @@ import logger from '../utils/logger.js';
 
 class CertificateService {
     constructor() {
-        // Validate encryption key on initialization
-        this.validateEncryptionKey();
-    }
-
-    /**
-     * Validate that the encryption key is properly configured
-     * @private
-     * @throws {Error} If encryption key is not configured or invalid
-     */
-    validateEncryptionKey() {
-        const key = process.env.SERVICE_KEY_ENCRYPTION_KEY;
-        
-        if (!key) {
-            throw new Error(
-                'CRITICAL: SERVICE_KEY_ENCRYPTION_KEY environment variable is not set. ' +
-                'This is required for encrypting service private keys. ' +
-                'Generate a secure 32-byte key using: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))")'
-            );
-        }
-
-        // Validate key format and length
-        let keyBuffer;
-        try {
-            // Support both hex-encoded (64 chars) and base64-encoded keys
-            if (key.length === 64 && /^[0-9a-f]+$/i.test(key)) {
-                keyBuffer = Buffer.from(key, 'hex');
-            } else {
-                keyBuffer = Buffer.from(key, 'base64');
-            }
-        } catch (error) {
-            throw new Error(
-                'CRITICAL: SERVICE_KEY_ENCRYPTION_KEY is not properly formatted. ' +
-                'Key must be either 64 hex characters or base64-encoded 32 bytes.'
-            );
-        }
-
-        if (keyBuffer.length !== 32) {
-            throw new Error(
-                `CRITICAL: SERVICE_KEY_ENCRYPTION_KEY must be exactly 32 bytes. ` +
-                `Received ${keyBuffer.length} bytes. ` +
-                'Generate a new key using: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))")'
-            );
-        }
-
-        logger.info('✅ Service certificate encryption key validated successfully');
-    }
-
-    /**
-     * Get the encryption key as a Buffer
-     * @private
-     * @returns {Buffer} Encryption key
-     * @throws {Error} If key is not configured
-     */
-    getEncryptionKey() {
-        const key = process.env.SERVICE_KEY_ENCRYPTION_KEY;
-        
-        if (!key) {
-            throw new Error(
-                'CRITICAL: SERVICE_KEY_ENCRYPTION_KEY is not set. ' +
-                'Service cannot encrypt/decrypt private keys. ' +
-                'This should have been caught during initialization.'
-            );
-        }
-
-        // Parse key (support hex or base64)
-        if (key.length === 64 && /^[0-9a-f]+$/i.test(key)) {
-            return Buffer.from(key, 'hex');
-        }
-        return Buffer.from(key, 'base64');
+        // Validation delegated to CryptographicKeyManager singleton
+        // If key is not available, keyManager initialization will fail
+        // This ensures fail-fast behavior at service startup
+        logger.info('Certificate Service initialized with centralized key management');
     }
 
     /**
@@ -248,7 +184,11 @@ class CertificateService {
             }
 
             const algorithm = 'aes-256-gcm';
-            const key = this.getEncryptionKey();
+            const key = keyManager.getEncryptionKey(); // Uses centralized key manager - NEVER random
+            if (!key) {
+                throw new Error('CRITICAL: Encryption key is not available');
+            }
+            
             const iv = crypto.randomBytes(16);
             
             const cipher = crypto.createCipheriv(algorithm, key, iv);
@@ -309,7 +249,10 @@ class CertificateService {
                 throw new Error(`Unsupported encryption version: ${version}. This may require key migration.`);
             }
 
-            const key = this.getEncryptionKey();
+            const key = keyManager.getEncryptionKey(); // Uses centralized key manager - NEVER random
+            if (!key) {
+                throw new Error('CRITICAL: Encryption key is not available');
+            }
             
             const decipher = crypto.createDecipheriv(
                 algorithm,
