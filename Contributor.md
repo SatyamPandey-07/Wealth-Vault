@@ -2,15 +2,16 @@
 
 ## Project Overview
 
-Wealth Vault is a comprehensive financial wellness application built with the MERN stack (MongoDB, Express.js, React, TypeScript) that helps users track spending patterns, set financial goals, and make informed financial decisions using AI-powered insights.
+Wealth Vault is a comprehensive financial wellness application built with modern web technologies that helps users track spending patterns, set financial goals, and make informed financial decisions using AI-powered insights.
 
 ### Tech Stack
 
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS
 - **Backend**: Node.js + Express.js
-- **Authentication**: JWT + Supabase (hybrid setup)
+- **Database**: PostgreSQL + Drizzle ORM
+- **Authentication**: JWT-based authentication
 - **Charts**: Chart.js + React-Chartjs-2
-- **Additional**: QR scanning, CSV import, AI coaching
+- **Additional**: QR scanning, CSV import, AI coaching, Redis caching
 
 ## Expectations for Contributors
 
@@ -20,7 +21,7 @@ Wealth Vault is a comprehensive financial wellness application built with the ME
 - **Backend**: Node.js, Express.js, Drizzle ORM
 - **Tools**: Git, npm/yarn, ESLint, Jest (for testing)
 - **APIs**: RESTful API design, JWT authentication
-- **Optional but helpful**: Supabase, Chart.js, QR code libraries
+- **Optional but helpful**: PostgreSQL, Redis, Chart.js, QR code libraries
 
 ### Coding Standards
 
@@ -140,13 +141,13 @@ The application is currently English-only with basic accessibility support. Impr
 
 ### Database and Architecture
 
-The hybrid MongoDB/Supabase architecture provides flexibility, but could be enhanced:
+The PostgreSQL + Drizzle ORM architecture provides a robust foundation for financial data management:
 
 - Database migration system for schema evolution
 - Automated backup and disaster recovery procedures
 - Database performance monitoring and optimization
 - Enhanced schema validation and data integrity checks
-- Evaluation of PostgreSQL for complex analytical queries
+- Complex analytical queries for financial insights
 - Strategic database indexing for improved query performance
 
 ## Getting Started for Contributors

@@ -458,7 +458,6 @@ process.on('SIGINT', shutdown);
 // Start the server
 startServer();
 
-  precomputePathsJob.start();
-}
+precomputePathsJob.start();
 
 export default app;
