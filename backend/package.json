@@ -6,12 +6,12 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "node server.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "db:migrate": "node -e 'import(\"./config/migrate.js\").then(m => m.migrate())'",
+    "db:migrate": "node ./config/migrate.js",
     "db:fix-schema": "node db/migrations/fix-schema-consistency.js",
     "db:validate": "node -e 'import(\"./utils/schemaValidation.js\").then(v => console.log(\"Schema validation loaded\"))",
     "tokens:cleanup": "node -e 'import(\"./jobs/tokenCleanup.js\").then(j => j.runCleanup())'"

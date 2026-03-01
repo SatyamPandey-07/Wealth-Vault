@@ -9,7 +9,11 @@ import { eq, and } from 'drizzle-orm';
 import db from '../config/db.js';
 import { tenants, tenantMembers, users } from '../db/schema.js';
 import { getMemberAuthorizationContext, initializeTenantRbac } from '../services/rbacService.js';
-import { buildRoutingDecision, extractTenantRegionConfig, isDataClassRestricted } from '../services/multiRegionService.js';
+import {
+  extractTenantRegionConfig,
+  logRegionComplianceEvent,
+  validateRegionAccess
+} from '../services/multiRegionService.js';
 import { logger } from '../utils/logger.js';
 import policyEngineService from '../services/policyEngineService.js';
 
@@ -150,42 +154,51 @@ export const validateTenantAccess = async (req, res, next) => {
       joinedAt: membership.joinedAt
     };
 
-    const regionRoutingEnabled = process.env.ENABLE_REGION_ROUTING === 'true';
-    if (regionRoutingEnabled) {
-      const requestRegion = req.headers['x-region'] || req.headers['x-app-region'] || process.env.APP_REGION;
-      const routingDecision = buildRoutingDecision({
-        tenant: req.tenant,
-        requestRegion,
-        method: req.method
+    const requestRegion = req.headers['x-region'] || req.headers['x-app-region'] || process.env.APP_REGION;
+    const dataClass = String(req.headers['x-data-class'] || req.body?.dataClass || 'operational').toLowerCase();
+    const userRegion = req.headers['x-user-region'] || req.headers['x-geo-region'] || null;
+
+    const regionValidation = validateRegionAccess({
+      tenant: req.tenant,
+      method: req.method,
+      path: req.originalUrl,
+      requestRegion,
+      dataClass,
+      userRegion,
+      strictMode: true,
+      enforceGeoFence: process.env.ENABLE_GEO_FENCE_CHECKS === 'true'
+    });
+
+    req.regionRouting = regionValidation.decision;
+    req.regionValidation = regionValidation;
+
+    if (!regionValidation.ok) {
+      await logRegionComplianceEvent({
+        req,
+        validation: regionValidation,
+        statusCode: 409,
+        outcome: 'failure',
+        extraMetadata: {
+          middleware: 'validateTenantAccess'
+        }
+      }).catch((error) => {
+        logger.error('Failed to persist tenant middleware region audit log', {
+          error: error.message,
+          tenantId: req.tenant?.id,
+          requestId: req.requestId
+        });
       });
 
-      req.regionRouting = routingDecision;
-
-      if (!routingDecision.allow) {
-        return res.status(409).json({
-          success: false,
-          message: 'Request must be served from tenant home region',
-          code: 'REGION_POLICY_BLOCKED',
-          homeRegion: routingDecision.homeRegion,
-          requestRegion: routingDecision.requestRegion,
-          reason: routingDecision.reason
-        });
-      }
-
-      const dataClass = String(req.headers['x-data-class'] || req.body?.dataClass || 'operational').toLowerCase();
-      if (
-        routingDecision.requestRegion !== routingDecision.homeRegion &&
-        isDataClassRestricted(req.tenant, dataClass)
-      ) {
-        return res.status(409).json({
-          success: false,
-          message: 'Residency-restricted data must remain in tenant home region',
-          code: 'RESIDENCY_DATA_BLOCKED',
-          dataClass,
-          homeRegion: routingDecision.homeRegion,
-          requestRegion: routingDecision.requestRegion
-        });
-      }
+      return res.status(409).json({
+        success: false,
+        message: regionValidation.message,
+        code: regionValidation.code,
+        homeRegion: regionValidation.decision.homeRegion,
+        requestRegion: regionValidation.decision.requestRegion,
+        reason: regionValidation.decision.reason,
+        dataClass,
+        userRegion
+      });
     }
 
     await initializeTenantRbac(tenant.id, req.user.id, membership.id);

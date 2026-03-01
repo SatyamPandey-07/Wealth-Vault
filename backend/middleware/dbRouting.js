@@ -1,5 +1,6 @@
 import { getDBRouter } from '../services/dbRouterService.js';
 import logger from '../utils/logger.js';
+import { logRegionComplianceEvent, validateRegionAccess } from '../services/multiRegionService.js';
 
 /**
  * Database Routing Middleware
@@ -35,6 +36,56 @@ export function attachDBConnection(options = {}) {
 
     return (req, res, next) => {
         const router = getDBRouter();
+
+        const assertRegionComplianceForOperation = (operation) => {
+            if (!req.tenant) {
+                return;
+            }
+
+            const requestRegion = req.headers['x-region'] || req.headers['x-app-region'] || process.env.APP_REGION;
+            const dataClass = String(req.headers['x-data-class'] || req.body?.dataClass || 'operational').toLowerCase();
+            const userRegion = req.headers['x-user-region'] || req.headers['x-geo-region'] || null;
+            const syntheticMethod = operation === 'write' ? 'POST' : String(req.method || 'GET').toUpperCase();
+
+            const validation = validateRegionAccess({
+                tenant: req.tenant,
+                method: syntheticMethod,
+                path: req.originalUrl,
+                requestRegion,
+                dataClass,
+                userRegion,
+                strictMode: true,
+                enforceGeoFence: process.env.ENABLE_GEO_FENCE_CHECKS === 'true'
+            });
+
+            req.regionRouting = validation.decision;
+            req.regionValidation = validation;
+
+            if (!validation.ok) {
+                logRegionComplianceEvent({
+                    req,
+                    validation,
+                    statusCode: 409,
+                    outcome: 'failure',
+                    extraMetadata: {
+                        operation,
+                        middleware: 'attachDBConnection'
+                    }
+                }).catch((error) => {
+                    logger.error('Failed to persist DB region compliance audit event', {
+                        error: error.message,
+                        tenantId: req.tenant?.id,
+                        requestId: req.requestId
+                    });
+                });
+
+                const err = new Error(`Region policy blocked ${operation} operation: ${validation.code}`);
+                err.code = validation.code;
+                err.statusCode = 409;
+                err.regionValidation = validation;
+                throw err;
+            }
+        };
         
         // Initialize request DB context
         req.dbContext = {
@@ -81,6 +132,8 @@ export function attachDBConnection(options = {}) {
          * @returns {Object} Database connection
          */
         req.getReadDB = (opts = {}) => {
+            assertRegionComplianceForOperation('read');
+
             const routingOptions = {
                 operation: 'read',
                 forcePrimary: req.dbContext.forcePrimary || opts.forcePrimary || false,
@@ -103,6 +156,8 @@ export function attachDBConnection(options = {}) {
          * @returns {Object} Database connection (always primary)
          */
         req.getWriteDB = () => {
+            assertRegionComplianceForOperation('write');
+
             const result = router.getConnection({
                 operation: 'write',
                 sessionId: req.dbContext.sessionId
@@ -205,6 +260,17 @@ export function ensureConsistency() {
  */
 export function dbRoutingErrorHandler() {
     return (err, req, res, next) => {
+        if (err?.code && ['REGION_POLICY_BLOCKED', 'RESIDENCY_DATA_BLOCKED', 'GEOFENCE_REGION_MISMATCH'].includes(err.code)) {
+            return res.status(err.statusCode || 409).json({
+                success: false,
+                message: err.message || 'Region compliance policy blocked this operation',
+                code: err.code,
+                homeRegion: err.regionValidation?.decision?.homeRegion,
+                requestRegion: err.regionValidation?.decision?.requestRegion,
+                reason: err.regionValidation?.decision?.reason
+            });
+        }
+
         if (err.message && err.message.includes('database')) {
             logger.error('Database routing error', {
                 error: err.message,

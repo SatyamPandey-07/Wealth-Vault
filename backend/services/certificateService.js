@@ -1,8 +1,9 @@
-import { db } from '../config/db.js';
+import db from '../config/db.js';
 import { serviceIdentities, serviceCertificates, serviceAuthLogs } from '../db/schema.js';
 import { eq, and, lt, gt } from 'drizzle-orm';
 import crypto from 'crypto';
 import logger from '../utils/logger.js';
+import keyManager from '../utils/CryptographicKeyManager.js';
 
 /**
  * Certificate Service - Manages service identities and mTLS certificates
@@ -15,6 +16,13 @@ import logger from '../utils/logger.js';
  */
 
 class CertificateService {
+    constructor() {
+        // Validation delegated to CryptographicKeyManager singleton
+        // If key is not available, keyManager initialization will fail
+        // This ensures fail-fast behavior at service startup
+        logger.info('Certificate Service initialized with centralized key management');
+    }
+
     /**
      * Register a new service identity
      * @param {Object} serviceData - Service registration data
@@ -156,53 +164,124 @@ class CertificateService {
     }
 
     /**
-     * Encrypt private key for storage (placeholder - use proper encryption in production)
+     * Encrypt private key for storage using AES-256-GCM
      * @param {string} privateKey - Private key in PEM format
-     * @returns {string} Encrypted private key
+     * @returns {string} Encrypted private key (JSON string)
      * @private
+     * @throws {Error} If encryption fails or key is not configured
+     * 
+     * NOTE: For production, consider using:
+     * - AWS KMS (Key Management Service)
+     * - Azure Key Vault
+     * - HashiCorp Vault
+     * - Google Cloud KMS
+     * - Hardware Security Module (HSM)
      */
     encryptPrivateKey(privateKey) {
-        // In production, use KMS or HSM for key encryption
-        // For now, we'll use a basic encryption (NOT SECURE FOR PRODUCTION)
-        const algorithm = 'aes-256-gcm';
-        const key = process.env.SERVICE_KEY_ENCRYPTION_KEY || crypto.randomBytes(32);
-        const iv = crypto.randomBytes(16);
-        
-        const cipher = crypto.createCipheriv(algorithm, key, iv);
-        let encrypted = cipher.update(privateKey, 'utf8', 'hex');
-        encrypted += cipher.final('hex');
-        
-        const authTag = cipher.getAuthTag();
-        
-        return JSON.stringify({
-            encrypted,
-            iv: iv.toString('hex'),
-            authTag: authTag.toString('hex'),
-            algorithm
-        });
+        try {
+            if (!privateKey || typeof privateKey !== 'string') {
+                throw new Error('Private key must be a non-empty string');
+            }
+
+            const algorithm = 'aes-256-gcm';
+            const key = keyManager.getEncryptionKey(); // Uses centralized key manager - NEVER random
+            if (!key) {
+                throw new Error('CRITICAL: Encryption key is not available');
+            }
+            
+            const iv = crypto.randomBytes(16);
+            
+            const cipher = crypto.createCipheriv(algorithm, key, iv);
+            let encrypted = cipher.update(privateKey, 'utf8', 'hex');
+            encrypted += cipher.final('hex');
+            
+            const authTag = cipher.getAuthTag();
+            
+            // Include version for future key rotation support
+            const encryptedData = {
+                version: 1,
+                algorithm,
+                encrypted,
+                iv: iv.toString('hex'),
+                authTag: authTag.toString('hex'),
+                timestamp: new Date().toISOString()
+            };
+
+            return JSON.stringify(encryptedData);
+        } catch (error) {
+            logger.error('Private key encryption failed', {
+                error: error.message,
+                stack: error.stack
+            });
+            throw new Error(`Failed to encrypt private key: ${error.message}`);
+        }
     }
 
     /**
-     * Decrypt private key (placeholder)
-     * @param {string} encryptedKey - Encrypted private key
-     * @returns {string} Decrypted private key
+     * Decrypt private key
+     * @param {string} encryptedKey - Encrypted private key (JSON string)
+     * @returns {string} Decrypted private key in PEM format
      * @private
+     * @throws {Error} If decryption fails or key is not configured
      */
     decryptPrivateKey(encryptedKey) {
-        const { encrypted, iv, authTag, algorithm } = JSON.parse(encryptedKey);
-        const key = process.env.SERVICE_KEY_ENCRYPTION_KEY || crypto.randomBytes(32);
-        
-        const decipher = crypto.createDecipheriv(
-            algorithm,
-            key,
-            Buffer.from(iv, 'hex')
-        );
-        decipher.setAuthTag(Buffer.from(authTag, 'hex'));
-        
-        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        
-        return decrypted;
+        try {
+            if (!encryptedKey || typeof encryptedKey !== 'string') {
+                throw new Error('Encrypted key must be a non-empty string');
+            }
+
+            let encryptedData;
+            try {
+                encryptedData = JSON.parse(encryptedKey);
+            } catch (error) {
+                throw new Error('Invalid encrypted key format: not valid JSON');
+            }
+
+            const { version = 1, encrypted, iv, authTag, algorithm } = encryptedData;
+
+            // Validate required fields
+            if (!encrypted || !iv || !authTag || !algorithm) {
+                throw new Error('Missing required fields in encrypted key data');
+            }
+
+            // Support for key rotation - check version
+            if (version !== 1) {
+                throw new Error(`Unsupported encryption version: ${version}. This may require key migration.`);
+            }
+
+            const key = keyManager.getEncryptionKey(); // Uses centralized key manager - NEVER random
+            if (!key) {
+                throw new Error('CRITICAL: Encryption key is not available');
+            }
+            
+            const decipher = crypto.createDecipheriv(
+                algorithm,
+                key,
+                Buffer.from(iv, 'hex')
+            );
+            decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+            
+            let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+            decrypted += decipher.final('utf8');
+            
+            return decrypted;
+        } catch (error) {
+            logger.error('Private key decryption failed', {
+                error: error.message,
+                stack: error.stack
+            });
+            
+            // Provide more helpful error messages
+            if (error.message.includes('bad decrypt') || error.message.includes('Unsupported state')) {
+                throw new Error(
+                    'Failed to decrypt private key. ' +
+                    'This usually means the SERVICE_KEY_ENCRYPTION_KEY has changed or is incorrect. ' +
+                    'Original error: ' + error.message
+                );
+            }
+            
+            throw new Error(`Failed to decrypt private key: ${error.message}`);
+        }
     }
 
     /**
