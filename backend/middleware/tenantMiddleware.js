@@ -9,7 +9,9 @@ import { eq, and } from 'drizzle-orm';
 import db from '../config/db.js';
 import { tenants, tenantMembers, users } from '../db/schema.js';
 import { getMemberAuthorizationContext, initializeTenantRbac } from '../services/rbacService.js';
+import { buildRoutingDecision, extractTenantRegionConfig, isDataClassRestricted } from '../services/multiRegionService.js';
 import { logger } from '../utils/logger.js';
+import policyEngineService from '../services/policyEngineService.js';
 
 /**
  * Extract tenant ID from request (URL param or header)
@@ -127,6 +129,8 @@ export const validateTenantAccess = async (req, res, next) => {
     }
 
     // Attach tenant context to request
+    const regionConfig = extractTenantRegionConfig(tenant);
+
     req.tenant = {
       id: tenant.id,
       name: tenant.name,
@@ -134,7 +138,9 @@ export const validateTenantAccess = async (req, res, next) => {
       tier: tenant.tier,
       features: tenant.features,
       settings: tenant.settings,
-      ownerId: tenant.ownerId
+      ownerId: tenant.ownerId,
+      homeRegion: regionConfig.homeRegion,
+      residencyPolicy: regionConfig.residencyPolicy
     };
 
     req.tenantMembership = {
@@ -143,6 +149,44 @@ export const validateTenantAccess = async (req, res, next) => {
       permissions: membership.permissions,
       joinedAt: membership.joinedAt
     };
+
+    const regionRoutingEnabled = process.env.ENABLE_REGION_ROUTING === 'true';
+    if (regionRoutingEnabled) {
+      const requestRegion = req.headers['x-region'] || req.headers['x-app-region'] || process.env.APP_REGION;
+      const routingDecision = buildRoutingDecision({
+        tenant: req.tenant,
+        requestRegion,
+        method: req.method
+      });
+
+      req.regionRouting = routingDecision;
+
+      if (!routingDecision.allow) {
+        return res.status(409).json({
+          success: false,
+          message: 'Request must be served from tenant home region',
+          code: 'REGION_POLICY_BLOCKED',
+          homeRegion: routingDecision.homeRegion,
+          requestRegion: routingDecision.requestRegion,
+          reason: routingDecision.reason
+        });
+      }
+
+      const dataClass = String(req.headers['x-data-class'] || req.body?.dataClass || 'operational').toLowerCase();
+      if (
+        routingDecision.requestRegion !== routingDecision.homeRegion &&
+        isDataClassRestricted(req.tenant, dataClass)
+      ) {
+        return res.status(409).json({
+          success: false,
+          message: 'Residency-restricted data must remain in tenant home region',
+          code: 'RESIDENCY_DATA_BLOCKED',
+          dataClass,
+          homeRegion: routingDecision.homeRegion,
+          requestRegion: routingDecision.requestRegion
+        });
+      }
+    }
 
     await initializeTenantRbac(tenant.id, req.user.id, membership.id);
 
@@ -174,7 +218,7 @@ export const validateTenantAccess = async (req, res, next) => {
  * Require specific tenant role
  */
 export const requireTenantRole = (allowedRoles = []) => {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (!req.tenantMembership) {
       return res.status(401).json({
         success: false,
@@ -183,7 +227,29 @@ export const requireTenantRole = (allowedRoles = []) => {
       });
     }
 
-    if (!allowedRoles.includes(req.tenantMembership.role)) {
+    const userRole = req.tenantMembership.role;
+    const decision = await policyEngineService.authorize({
+      action: 'tenant:role:check',
+      user: req.user,
+      tenant: req.tenant || null,
+      resource: {
+        type: 'tenant-membership',
+        id: req.tenantMembership.id
+      },
+      context: {
+        method: req.method,
+        path: req.originalUrl || req.path,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'] || null,
+        requestId: req.id || req.headers['x-request-id'] || null,
+        allowedRoles,
+        userRole
+      }
+    });
+
+    req.authzDecision = decision;
+
+    if (!decision.allow) {
       logger.warn(`Unauthorized role access attempt`, {
         userId: req.user?.id,
         tenantId: req.tenant?.id,
@@ -193,6 +259,7 @@ export const requireTenantRole = (allowedRoles = []) => {
       return res.status(403).json({
         success: false,
         message: `This action requires one of the following roles: ${allowedRoles.join(', ')}`,
+        reason: decision.reason,
         code: 'INSUFFICIENT_ROLE'
       });
     }
@@ -207,7 +274,7 @@ export const requireTenantRole = (allowedRoles = []) => {
 export const requireTenantPermission = (requiredPermissions = [], mode = 'any') => {
   const permissionList = Array.isArray(requiredPermissions) ? requiredPermissions : [requiredPermissions];
 
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (!req.authorization) {
       return res.status(401).json({
         success: false,
@@ -227,7 +294,33 @@ export const requireTenantPermission = (requiredPermissions = [], mode = 'any') 
     const checks = normalizedRequired.map((permissionKey) => req.authorization.hasPermission(permissionKey));
     const isAllowed = mode === 'all' ? checks.every(Boolean) : checks.some(Boolean);
 
-    if (!isAllowed) {
+    const decision = await policyEngineService.authorize({
+      action: mode === 'all' ? 'tenant:permission:check:all' : 'tenant:permission:check:any',
+      user: req.user,
+      tenant: req.tenant || null,
+      resource: {
+        type: 'tenant-membership',
+        id: req.tenantMembership?.id || null
+      },
+      context: {
+        method: req.method,
+        path: req.originalUrl || req.path,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'] || null,
+        requestId: req.id || req.headers['x-request-id'] || null,
+        requiredPermissions: normalizedRequired,
+        grantedPermissions: req.authorization.permissions,
+        permissionChecks: {
+          any: checks.some(Boolean),
+          all: checks.every(Boolean)
+        },
+        userRole: req.tenantMembership?.role || null
+      }
+    });
+
+    req.authzDecision = decision;
+
+    if (!isAllowed || !decision.allow) {
       logger.warn('Permission denied for tenant action', {
         userId: req.user?.id,
         tenantId: req.tenant?.id,
@@ -239,7 +332,8 @@ export const requireTenantPermission = (requiredPermissions = [], mode = 'any') 
         success: false,
         message: 'Insufficient permissions for this action',
         code: 'INSUFFICIENT_PERMISSION',
-        requiredPermissions: normalizedRequired
+        requiredPermissions: normalizedRequired,
+        reason: decision.reason
       });
     }
 
