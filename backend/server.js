@@ -9,7 +9,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./config/swagger.js";
-import { connectRedis } from "./config/redis.js";
+import { connectRedis, getConnectionState, isRedisAvailable, disconnectRedis } from "./config/redis.js";
+import { connectDatabase, disconnectDatabase, getDatabaseState, isDatabaseHealthy } from "./config/db.js";
 import { scheduleCleanup } from "./jobs/tokenCleanup.js";
 import { initializeUploads } from "./middleware/fileUpload.js";
 import outboxDispatcher from "./jobs/outboxDispatcher.js";
@@ -57,6 +58,17 @@ const startServer = async () => {
   try {
     console.log('🚀 Starting Wealth Vault Server...');
     console.log('⏳ Initializing services...');
+
+    // Initialize Database Connection (CRITICAL - must succeed)
+    try {
+      console.log('🔄 Connecting to database...');
+      await connectDatabase();
+      console.log('✅ Database connected successfully');
+    } catch (err) {
+      console.error('❌ CRITICAL: Database connection failed:', err.message);
+      console.error('   Server cannot start without database connection.');
+      process.exit(1); // Fail fast
+    }
 
     // Initialize DB Router (with read/write split)
     try {
@@ -238,13 +250,27 @@ const startServer = async () => {
     app.use("/api/categories", userLimiter, categoryRoutes);
     app.use("/api/analytics", userLimiter, analyticsRoutes);
     app.use("/api/gemini", aiLimiter, geminiRouter);
-    app.use("/api/health", healthRoutes);
-    app.use("/api/performance", userLimiter, performanceRoutes);
-    app.use("/api/tenants", userLimiter, tenantRoutes);
-    app.use("/api/audit", userLimiter, auditRoutes);
-    app.use("/api/db-router", userLimiter, dbRouterRoutes);
-    app.use("/api/authorization", userLimiter, authorizationRoutes);
-
+    app.use("/api/health", async (req, res) => {
+      const redisState = getConnectionState();
+      const dbState = getDatabaseState();
+      const dbHealthy = await isDatabaseHealthy();
+      
+      const overallHealthy = dbHealthy && dbState.isConnected;
+      
+      res.status(overallHealthy ? 200 : 503).json({
+        status: overallHealthy ? "OK" : "DEGRADED",
+        message: overallHealthy 
+          ? "Wealth Vault API is running" 
+          : "API running with degraded services",
+        timestamp: new Date().toISOString(),
+        services: {
+          database: {
+            state: dbState.state,
+            isConnected: dbState.isConnected,
+            healthy: dbHealthy,
+            attempts: dbState.attempts,
+            ...(dbState.lastError && { lastError: dbState.lastError })
+          },
     // Secur fil servr for uploddd fils
     app.use("/uploads", createFileServerRoute());
 
@@ -259,17 +285,27 @@ const startServer = async () => {
           redis: {
             state: redisState.state,
             circuitBreaker: redisState.circuitBreaker,
-            isConnected: redisState.isConnected
-          }
-        }
+            isConnected: redisState.isConn,
+        databaseConnected: getDatabaseState().isConnected
       });
-    });
-
-    // 404 handler for undefined routes (must be before error handler)
-    app.use(notFound);
-
-    // Add error logging middleware
-    app.use(errorLogger);
+      
+      console.log(`\n🚀 Server running on port ${PORT}`);
+      console.log(
+        `📱 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:3000"}`
+      );
+      console.log(`🔗 API Base URL: http://localhost:${PORT}/api`);
+      console.log(`📚 API Docs: http://localhost:${PORT}/api-docs`);
+      console.log(`🏥 Health Check: http://localhost:${PORT}/api/health`);
+      
+      // Database status
+      const dbState = getDatabaseState();
+      if (dbState.isConnected) {
+        console.log('✅ Database: Connected');
+      } else {
+        console.log('❌ Database: Not connected');
+      }
+      
+      // Redis statusp.use(errorLogger);
 
     // DB routing error handler (must be before general error handler)
     app.use(dbRoutingErrorHandler());
@@ -284,10 +320,13 @@ const startServer = async () => {
         port: PORT,
         environment: process.env.NODE_ENV || 'development',
         frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
-        redisAvailable: isRedisAvailable()
-      });
-      
-      console.log(`\n🚀 Server running on port ${PORT}`);
+    console.log('✅ Background jobs stopped');
+    
+    // Disconnect from Redis
+    await disconnectRedis();
+    
+    // Disconnect from Database
+    await disconnectDatabaseerver running on port ${PORT}`);
       console.log(
         `📱 Frontend URL: ${process.env.FRONTEND_URL || "http://localhost:3000"}`
       );
