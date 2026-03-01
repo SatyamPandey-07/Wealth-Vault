@@ -14,6 +14,7 @@ import { scheduleCleanup } from "./jobs/tokenCleanup.js";
 import { initializeUploads } from "./middleware/fileUpload.js";
 import { createFileServerRoute } from "./middleware/secureFileServer.js";
 import { requestIdMiddleware, requestLogger, errorLogger, analyticsMiddleware } from "./middleware/requestLogger.js";
+import { auditLogger } from "./middleware/auditLogger.js";
 import { performanceMiddleware } from "./services/performanceMonitor.js";
 import { logInfo, logError } from "./utils/logger.js";
 import { generalLimiter, aiLimiter, userLimiter } from "./middleware/rateLimiter.js";
@@ -33,6 +34,7 @@ import analyticsRoutes from "./routes/analytics.js";
 import healthRoutes from "./routes/health.js";
 import performanceRoutes from "./routes/performance.js";
 import tenantRoutes from "./routes/tenants.js";
+import auditRoutes from "./routes/audit.js";
 
 // Load environment variables
 dotenv.config();
@@ -122,6 +124,7 @@ app.use(requestIdMiddleware);
 app.use(requestLogger);
 app.use(performanceMiddleware);
 app.use(analyticsMiddleware);
+app.use(auditLogger);
 
 // Additional CORS headers middleware
 app.use((req, res, next) => {
@@ -173,6 +176,7 @@ app.use("/api/gemini", aiLimiter, geminiRouter);
 app.use("/api/health", healthRoutes);
 app.use("/api/performance", userLimiter, performanceRoutes);
 app.use("/api/tenants", userLimiter, tenantRoutes);
+app.use("/api/audit", userLimiter, auditRoutes);
 
 // Secur fil servr for uploddd fils
 app.use("/uploads", createFileServerRoute());

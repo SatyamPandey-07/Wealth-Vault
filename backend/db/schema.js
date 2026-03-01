@@ -109,6 +109,30 @@ export const rbacAuditLogs = pgTable('rbac_audit_logs', {
     createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Centralized Audit Logs - Tamper-evident activity logging for compliance and security
+export const auditLogs = pgTable('audit_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'set null' }),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    category: text('category').default('general'),
+    resourceType: text('resource_type'),
+    resourceId: text('resource_id'),
+    method: text('method'),
+    path: text('path'),
+    statusCode: integer('status_code'),
+    outcome: text('outcome').default('success'),
+    severity: text('severity').default('low'),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').default({}),
+    changes: jsonb('changes').default({}),
+    previousHash: text('previous_hash'),
+    entryHash: text('entry_hash').notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Users Table
 export const users = pgTable('users', {
     id: uuid('id').defaultRandom().primaryKey(),
@@ -258,6 +282,7 @@ export const usersRelations = relations(users, ({ many }) => ({
     goals: many(goals),
     deviceSessions: many(deviceSessions),
     rbacAuditLogs: many(rbacAuditLogs),
+    auditLogs: many(auditLogs),
 }));
 
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -272,6 +297,7 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
     rbacRoles: many(rbacRoles),
     rbacPermissions: many(rbacPermissions),
     rbacAuditLogs: many(rbacAuditLogs),
+    auditLogs: many(auditLogs),
 }));
 
 export const tenantMembersRelations = relations(tenantMembers, ({ one, many }) => ({
@@ -340,6 +366,17 @@ export const rbacAuditLogsRelations = relations(rbacAuditLogs, ({ one }) => ({
     }),
     actor: one(users, {
         fields: [rbacAuditLogs.actorUserId],
+        references: [users.id],
+    }),
+}));
+
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [auditLogs.tenantId],
+        references: [tenants.id],
+    }),
+    actor: one(users, {
+        fields: [auditLogs.actorUserId],
         references: [users.id],
     }),
 }));
