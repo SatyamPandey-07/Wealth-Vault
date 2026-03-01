@@ -5211,6 +5211,20 @@ export const impliedVolSurfaces = pgTable('implied_vol_surfaces', {
     source: text('source').default('market_oracle'),
 });
 
+// Push Subscriptions Table - For browser push notifications
+export const pushSubscriptions = pgTable('push_subscriptions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    endpoint: text('endpoint').notNull(), // Push service endpoint URL
+    p256dh: text('p256dh').notNull(), // P-256 elliptic curve Diffie-Hellman public key
+    auth: text('auth').notNull(), // Authentication secret
+    userAgent: text('user_agent'), // Browser/device info
+    isActive: boolean('is_active').default(true),
+    lastUsed: timestamp('last_used').defaultNow(),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 // Derivatives Relations
 export const optionsPositionsRelations = relations(optionsPositions, ({ one }) => ({
     user: one(users, { fields: [optionsPositions.userId], references: [users.id] }),
@@ -5227,6 +5241,9 @@ export const strategyLegsRelations = relations(strategyLegs, ({ one, many }) => 
 
 export const impliedVolSurfacesRelations = relations(impliedVolSurfaces, ({ one }) => ({
     investment: one(investments, { fields: [impliedVolSurfaces.investmentId], references: [investments.id] }),
+}));
+export const pushSubscriptionsRelations = relations(pushSubscriptions, ({ one }) => ({
+    user: one(users, { fields: [pushSubscriptions.userId], references: [users.id] }),
 }));
 export const serviceAuthLogsRelations = relations(serviceAuthLogs, ({ one }) => ({
     service: one(serviceIdentities, {
