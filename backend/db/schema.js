@@ -157,16 +157,24 @@ export const users = pgTable('users', {
     emergencyFund: numeric('emergency_fund', { precision: 12, scale: 2 }).default('0'),
     isActive: boolean('is_active').default(true),
     lastLogin: timestamp('last_login').defaultNow(),
+    mfaEnabled: boolean('mfa_enabled').default(false),
+    mfaSecret: text('mfa_secret'),
     preferences: jsonb('preferences').default({
         notifications: { email: true, push: true, sms: false },
         theme: 'auto',
         language: 'en'
     }),
+    savingsRoundUpEnabled: boolean('savings_round_up_enabled').default(false),
+    savingsGoalId: uuid('savings_goal_id'), // Linked to goals.id later in relations
+    roundUpToNearest: numeric('round_up_to_nearest', { precision: 5, scale: 2 }).default('1.00'),
+    peerComparisonConsent: boolean('peer_comparison_consent').default(false),
+    ageGroup: text('age_group'),
+    incomeRange: text('income_range'),
+    location: text('location'),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-// Categories Table
 export const categories = pgTable('categories', {
     id: uuid('id').defaultRandom().primaryKey(),
     tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
@@ -175,110 +183,201 @@ export const categories = pgTable('categories', {
     description: text('description'),
     color: text('color').notNull().default('#3B82F6'),
     icon: text('icon').default('tag'),
-    type: text('type').default('expense'), // enum: 'expense', 'income', 'both'
+    type: text('type').default('expense'),
     isDefault: boolean('is_default').default(false),
     isActive: boolean('is_active').default(true),
     parentCategoryId: uuid('parent_category_id').references(() => categories.id, { onDelete: 'set null', onUpdate: 'cascade' }),
     budget: jsonb('budget').default({ monthly: 0, yearly: 0 }),
     spendingLimit: numeric('spending_limit', { precision: 12, scale: 2 }).default('0'),
     priority: integer('priority').default(0),
+    metadata: jsonb('metadata').default({ usageCount: 0, lastUsed: null, averageAmount: 0 }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Budget Alerts Table
+export const budgetAlerts = pgTable('budget_alerts', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    threshold: integer('threshold').notNull(), // 50, 80, 100
+    period: text('period').notNull(), // '2023-10'
+    triggeredAt: timestamp('triggered_at').defaultNow(),
+    metadata: jsonb('metadata').default({}),
+});
+
+export const budgetRules = pgTable('budget_rules', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    ruleType: text('rule_type').notNull(), // 'percentage', 'amount', 'frequency'
+    condition: jsonb('condition').notNull(), // { operator: '>', value: 500, period: 'week' }
+    threshold: numeric('threshold', { precision: 12, scale: 2 }).notNull(),
+    period: text('period').notNull(), // 'daily', 'weekly', 'monthly', 'yearly'
+    notificationType: text('notification_type').notNull(), // 'email', 'push', 'in_app'
+    isActive: boolean('is_active').default(true),
+    lastTriggered: timestamp('last_triggered'),
     metadata: jsonb('metadata').default({
-        usageCount: 0,
-        lastUsed: null,
-        averageAmount: 0
+        triggerCount: 0,
+        lastAmount: 0,
+        createdBy: 'user'
     }),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-// Expenses Table
 export const expenses = pgTable('expenses', {
     id: uuid('id').defaultRandom().primaryKey(),
     tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null', onUpdate: 'cascade' }),
+    vaultId: uuid('vault_id'), // References vaults.id later
     amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
     currency: text('currency').default('USD'),
     description: text('description').notNull(),
-    subcategory: text('subcategory'),
     date: timestamp('date').defaultNow().notNull(),
     paymentMethod: text('payment_method').default('other'),
-    location: jsonb('location'), // { name, address, coordinates: { lat, lng } }
-    tags: jsonb('tags').default([]), // Store generic array as JSONB or text[]
+    location: jsonb('location'),
+    tags: jsonb('tags').default([]),
     receipt: jsonb('receipt'),
     isRecurring: boolean('is_recurring').default(false),
     recurringPattern: jsonb('recurring_pattern'),
+    nextExecutionDate: timestamp('next_execution_date'),
+    lastExecutedDate: timestamp('last_executed_date'),
     notes: text('notes'),
     status: text('status').default('completed'),
+    isTaxDeductible: boolean('is_tax_deductible').default(false),
+    taxCategoryId: uuid('tax_category_id'),
+    taxYear: integer('tax_year'),
+    metadata: jsonb('metadata').default({ createdBy: 'system', version: 1 }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+}, (table) => ({
+    userDateIdx: index('idx_expenses_user_date').on(table.userId, table.date),
+    userCategoryIdx: index('idx_expenses_user_category').on(table.userId, table.categoryId),
+}));
+
+export const expenseShares = pgTable('expense_shares', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    expenseId: uuid('expense_id').references(() => expenses.id, { onDelete: 'cascade' }).notNull(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    shareAmount: numeric('share_amount', { precision: 12, scale: 2 }).notNull(),
+    sharePercentage: doublePrecision('share_percentage'),
+    isPaid: boolean('is_paid').default(false),
+    paidAt: timestamp('paid_at'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const reimbursements = pgTable('reimbursements', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    fromUserId: uuid('from_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    toUserId: uuid('to_user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    currency: text('currency').default('USD'),
+    description: text('description').notNull(),
+    status: text('status').default('pending'),
+    expenseId: uuid('expense_id').references(() => expenses.id, { onDelete: 'set null' }),
+    completedAt: timestamp('completed_at'),
+    dueDate: timestamp('due_date'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const expenseApprovals = pgTable('expense_approvals', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    expenseId: uuid('expense_id').references(() => expenses.id, { onDelete: 'cascade' }).notNull(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    requestedBy: uuid('requested_by').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'set null' }),
+    status: text('status').default('pending'),
+    approvalNotes: text('approval_notes'),
+    requestedAt: timestamp('requested_at').defaultNow(),
+    approvedAt: timestamp('approved_at'),
     metadata: jsonb('metadata').default({
-        createdBy: 'system',
-        lastModified: null,
-        version: 1,
-        flags: []
+        budgetId: null,
+        amount: 0,
+        category: null
     }),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-// Goals Table
-export const goals = pgTable('goals', {
+export const sharedBudgets = pgTable('shared_budgets', {
     id: uuid('id').defaultRandom().primaryKey(),
     tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null', onUpdate: 'cascade' }),
     title: text('title').notNull(),
     description: text('description'),
-    targetAmount: numeric('target_amount', { precision: 12, scale: 2 }).notNull(),
-    currentAmount: numeric('current_amount', { precision: 12, scale: 2 }).default('0'),
+    totalBudget: numeric('total_budget', { precision: 12, scale: 2 }).notNull(),
+    currentSpent: numeric('current_spent', { precision: 12, scale: 2 }).default('0'),
     currency: text('currency').default('USD'),
-    type: text('type').default('savings'),
-    priority: text('priority').default('medium'),
-    status: text('status').default('active'),
-    deadline: timestamp('deadline').notNull(),
+    period: text('period').default('monthly'),
     startDate: timestamp('start_date').defaultNow(),
-    completedDate: timestamp('completed_date'),
-    milestones: jsonb('milestones').default([]),
-    recurringContribution: jsonb('recurring_contribution').default({ amount: 0, frequency: 'monthly' }),
-    tags: jsonb('tags').default([]),
-    notes: text('notes'),
-    isPublic: boolean('is_public').default(false),
+    endDate: timestamp('end_date'),
+    approvalRequired: boolean('approval_required').default(false),
+    approvalThreshold: numeric('approval_threshold', { precision: 12, scale: 2 }),
+    isActive: boolean('is_active').default(true),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     metadata: jsonb('metadata').default({
-        lastContribution: null,
-        totalContributions: 0,
-        averageContribution: 0,
-        streakDays: 0
+        categories: [],
+        contributors: [],
+        approvers: []
     }),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-// Device Sessions Table for token management
-export const deviceSessions = pgTable('device_sessions', {
+// Vaults Module
+export const vaults = pgTable('vaults', {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-    deviceId: text('device_id').notNull(),
-    deviceName: text('device_name'),
-    deviceType: text('device_type').default('web'), // web, mobile, tablet
-    ipAddress: text('ip_address'),
-    userAgent: text('user_agent'),
-    refreshToken: text('refresh_token').notNull().unique(),
-    accessToken: text('access_token'),
+    name: text('name').notNull(),
+    description: text('description'),
+    ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    currency: text('currency').default('USD'),
     isActive: boolean('is_active').default(true),
-    lastActivity: timestamp('last_activity').defaultNow(),
-    expiresAt: timestamp('expires_at').notNull(),
+    status: text('status').default('active'), // 'active', 'frozen'
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-// Token Blacklist Table
-export const tokenBlacklist = pgTable('token_blacklist', {
+// Subscriptions Table  
+export const subscriptions = pgTable('subscriptions', {
     id: uuid('id').defaultRandom().primaryKey(),
-    token: text('token').notNull().unique(),
-    tokenType: text('token_type').notNull(), // access, refresh
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-    reason: text('reason').default('logout'), // logout, password_change, security
-    expiresAt: timestamp('expires_at').notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null' }),
+    name: text('name').notNull(),
+    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    currency: text('currency').default('USD'),
+    billingCycle: text('billing_cycle').default('monthly'), // monthly, yearly, weekly
+    nextPaymentDate: timestamp('next_payment_date').notNull(),
+    description: text('description'),
+    isActive: boolean('is_active').default(true),
+    metadata: jsonb('metadata').default({}),
     createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const subscriptionUsage = pgTable('subscription_usage', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    subscriptionId: uuid('subscription_id').references(() => subscriptions.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    month: text('month').notNull(), // Format: YYYY-MM
+    usageCount: integer('usage_count').default(0),
+    usageMinutes: integer('usage_minutes').default(0),
+    usageValue: jsonb('usage_value').default({}), // Flexible for different tracking metrics
+    lastUsed: timestamp('last_used'),
+    isActive: boolean('is_active').default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 // Outbox Events Table - Transactional outbox pattern for reliable event publishing
@@ -515,16 +614,93 @@ export const categoriesRelations = relations(categories, ({ one, many }) => ({
         fields: [categories.userId],
         references: [users.id],
     }),
-    parentCategory: one(categories, {
-        fields: [categories.parentCategoryId],
-        references: [categories.id],
-        relationName: 'parent_child_category'
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const financialHealthScores = pgTable('financial_health_scores', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    overallScore: doublePrecision('overall_score').notNull(),
+    rating: text('rating').notNull(),
+    dtiScore: doublePrecision('dti_score').default(0),
+    savingsRateScore: doublePrecision('savings_rate_score').default(0),
+    volatilityScore: doublePrecision('volatility_score').default(0),
+    emergencyFundScore: doublePrecision('emergency_fund_score').default(0),
+    budgetAdherenceScore: doublePrecision('budget_adherence_score').default(0),
+    goalProgressScore: doublePrecision('goal_progress_score').default(0),
+    metrics: jsonb('metrics').default({
+        dti: 0,
+        savingsRate: 0,
+        volatility: 0,
+        monthlyIncome: 0,
+        monthlyExpenses: 0,
+        emergencyFundMonths: 0,
+        budgetAdherence: 0,
+        goalProgress: 0
     }),
-    childCategories: many(categories, {
-        relationName: 'parent_child_category'
+    recommendation: text('recommendation'),
+    insights: jsonb('insights').default([]),
+    cashFlowPrediction: jsonb('cash_flow_prediction').default({
+        predictedExpenses: 0,
+        predictedIncome: 0,
+        predictedBalance: 0,
+        confidence: 'low',
+        warning: null
     }),
-    expenses: many(expenses),
-    goals: many(goals),
+    periodStart: timestamp('period_start').notNull(),
+    periodEnd: timestamp('period_end').notNull(),
+    calculatedAt: timestamp('calculated_at').defaultNow(),
+    createdAt: timestamp('created_at').defaultNow(),
+}, (table) => {
+    return {
+        userIdIdx: index('idx_financial_health_scores_user_id').on(table.userId),
+        calculatedAtIdx: index('idx_financial_health_scores_calculated_at').on(table.calculatedAt),
+        ratingIdx: index('idx_financial_health_scores_rating').on(table.rating),
+    };
+});
+
+// ============================================================================
+// INVESTMENTS & ASSETS
+// ============================================================================
+
+export const portfolios = pgTable('portfolios', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    totalValue: numeric('total_value', { precision: 15, scale: 2 }).default('0'),
+    riskTolerance: text('risk_tolerance').default('moderate'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const investments = pgTable('investments', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    symbol: text('symbol').notNull(),
+    name: text('name').notNull(),
+    type: text('type').notNull(), // stock, crypto, etf, mutual_fund
+    quantity: numeric('quantity', { precision: 18, scale: 8 }).notNull(),
+    averageCost: numeric('average_cost', { precision: 18, scale: 8 }).notNull(),
+    totalCost: numeric('total_cost', { precision: 18, scale: 2 }).notNull(),
+    currentPrice: numeric('current_price', { precision: 18, scale: 8 }),
+    marketValue: numeric('market_value', { precision: 18, scale: 2 }),
+    unrealizedGainLoss: numeric('unrealized_gain_loss', { precision: 18, scale: 2 }),
+    unrealizedGainLossPercent: numeric('unrealized_gain_loss_percent', { precision: 10, scale: 2 }),
+    baseCurrencyValue: numeric('base_currency_value', { precision: 18, scale: 2 }),
+    baseCurrencyCode: text('base_currency_code'),
+    valuationDate: timestamp('valuation_date'),
+    lastPriceUpdate: timestamp('last_price_update'),
+    isActive: boolean('is_active').default(true),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+}, (table) => ({
+    userIdx: index('idx_investments_user').on(table.userId),
+    portfolioIdx: index('idx_investments_portfolio').on(table.portfolioId),
+    symbolIdx: index('idx_investments_symbol').on(table.symbol),
 }));
 
 export const expensesRelations = relations(expenses, ({ one }) => ({
@@ -557,18 +733,326 @@ export const goalsRelations = relations(goals, ({ one }) => ({
     }),
 }));
 
-export const deviceSessionsRelations = relations(deviceSessions, ({ one }) => ({
-    user: one(users, {
-        fields: [deviceSessions.userId],
-        references: [users.id],
-    }),
-}));
+export const forecastSnapshots = pgTable('forecast_snapshots', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    symbol: text('symbol').notNull(),
+    name: text('name').notNull(),
+    quantity: numeric('quantity', { precision: 15, scale: 6 }).notNull(),
+    averageCost: numeric('average_cost', { precision: 12, scale: 4 }).notNull(),
+    currentPrice: numeric('current_price', { precision: 12, scale: 4 }),
+    createdAt: timestamp('created_at').defaultNow(),
+});
 
-export const tokenBlacklistRelations = relations(tokenBlacklist, ({ one }) => ({
-    user: one(users, {
-        fields: [tokenBlacklist.userId],
-        references: [users.id],
+export const forecasts = pgTable('forecasts', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null' }),
+    forecastType: text('forecast_type').notNull(), // 'expense', 'income', 'budget', 'cash_flow'
+    period: text('period').notNull(), // 'monthly', 'quarterly', 'yearly'
+    forecastData: jsonb('forecast_data').notNull(), // Array of prediction points with dates and values
+    parameters: jsonb('parameters').notNull(), // Model parameters, confidence intervals, etc.
+    accuracy: doublePrecision('accuracy'), // Model accuracy score (0-1)
+    confidenceLevel: doublePrecision('confidence_level').default(0.95), // Statistical confidence level
+    scenario: text('scenario').default('baseline'), // 'baseline', 'optimistic', 'pessimistic', 'custom'
+    isSimulation: boolean('is_simulation').default(false), // True for user-created what-if scenarios
+    simulationInputs: jsonb('simulation_inputs'), // User inputs for simulations (e.g., income changes, expense adjustments)
+    currency: text('currency').default('USD'),
+    metadata: jsonb('metadata').default({
+        modelType: 'linear_regression',
+        trainingDataPoints: 0,
+        seasonalAdjustment: false,
+        externalFactors: [],
+        lastTrained: null
     }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const cashFlowModels = pgTable('cash_flow_models', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    modelName: text('model_name').notNull(),
+    modelType: text('model_type').notNull(), // 'linear', 'exponential', 'arima', 'neural'
+    timeframe: text('timeframe').notNull(), // 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
+    trainingData: jsonb('training_data').notNull(), // Historical cash flow data used for training
+    predictions: jsonb('predictions').notNull(), // Future cash flow predictions with dates and amounts
+    accuracy: doublePrecision('accuracy'), // Model accuracy score (0-1)
+    parameters: jsonb('parameters'), // Model-specific parameters (coefficients, hyperparameters, etc.)
+    validFrom: timestamp('valid_from').notNull(),
+    validUntil: timestamp('valid_until'),
+    isActive: boolean('is_active').default(true),
+    metadata: jsonb('metadata').default({
+        features: [],
+        confidenceIntervals: {},
+        seasonalFactors: {}
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const currencyWallets = pgTable('currency_wallets', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    currency: text('currency').notNull(), // 'USD', 'EUR', 'BTC'
+    balance: numeric('balance', { precision: 18, scale: 8 }).default('0'), // High precision for crypto
+    isDefault: boolean('is_default').default(false),
+    updatedAt: timestamp('updated_at').defaultNow(),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const fxRates = pgTable('fx_rates', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    pair: text('pair').notNull().unique(), // 'USD/EUR'
+    rate: numeric('rate', { precision: 18, scale: 8 }).notNull(),
+    change24h: numeric('change_24h', { precision: 5, scale: 2 }).default('0'),
+    volatility: numeric('volatility', { precision: 5, scale: 2 }).default('0'), // High volatility alert
+    lastUpdated: timestamp('last_updated').defaultNow(),
+});
+
+export const savingsRoundups = pgTable('savings_roundups', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    goalId: uuid('goal_id').references(() => goals.id, { onDelete: 'set null' }),
+    expenseId: uuid('expense_id').references(() => expenses.id, { onDelete: 'cascade' }).notNull(),
+    originalAmount: numeric('original_amount', { precision: 12, scale: 2 }).notNull(),
+    roundedAmount: numeric('rounded_amount', { precision: 12, scale: 2 }).notNull(),
+    roundUpAmount: numeric('round_up_amount', { precision: 12, scale: 2 }).notNull(),
+    currency: text('currency').default('USD'),
+    status: text('status').default('pending'), // pending, transferred, failed
+    transferId: text('transfer_id'), // Plaid transfer ID
+    transferDate: timestamp('transfer_date'),
+    errorMessage: text('error_message'),
+    metadata: jsonb('metadata').default({
+        roundUpToNearest: '1.00',
+        createdBy: 'system'
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const balanceSnapshots = pgTable('balance_snapshots', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    date: timestamp('date').defaultNow().notNull(),
+    balance: numeric('balance', { precision: 12, scale: 2 }).notNull(),
+    income: numeric('income', { precision: 12, scale: 2 }).default('0'),
+    expense: numeric('expense', { precision: 12, scale: 2 }).default('0'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+}, (table) => {
+    return {
+        userDateIdx: index('idx_balance_snapshots_user_date').on(table.userId, table.date),
+    };
+});
+
+export const liquidityAlerts = pgTable('liquidity_alerts', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    threshold: numeric('threshold', { precision: 12, scale: 2 }).notNull(),
+    alertDays: integer('alert_days').default(7),
+    isActive: boolean('is_active').default(true),
+    lastTriggeredAt: timestamp('last_triggered_at'),
+    severity: text('severity').default('warning'), // 'warning', 'critical'
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+}, (table) => {
+    return {
+        userIdIdx: index('idx_liquidity_alerts_user_id').on(table.userId),
+    };
+});
+
+export const transferSuggestions = pgTable('transfer_suggestions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    sourceVaultId: uuid('source_vault_id').references(() => vaults.id, { onDelete: 'set null' }),
+    destVaultId: uuid('dest_vault_id').references(() => vaults.id, { onDelete: 'set null' }),
+    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    reason: text('reason'),
+    suggestedDate: timestamp('suggested_date'),
+    status: text('status').default('pending'), // 'pending', 'accepted', 'ignored', 'executed'
+    aiConfidence: doublePrecision('ai_confidence'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+}, (table) => {
+    return {
+        userIdIdx: index('idx_transfer_suggestions_user_id').on(table.userId),
+    };
+});
+
+export const tokenBlacklist = pgTable('token_blacklist', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    token: text('token').notNull().unique(),
+    tokenType: text('token_type').notNull(), // access, refresh
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    reason: text('reason').default('logout'), // logout, password_change, security
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const reports = pgTable('reports', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    type: text('type').notNull(), // 'monthly_digest', 'tax_summary', 'custom'
+    format: text('format').notNull(), // 'pdf', 'excel'
+    url: text('url').notNull(),
+    period: text('period'), // '2023-10'
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const vaultInvites = pgTable('vault_invites', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    vaultId: uuid('vault_id').references(() => vaults.id, { onDelete: 'cascade' }).notNull(),
+    inviterId: uuid('inviter_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    email: text('email').notNull(),
+    token: text('token').notNull().unique(),
+    role: text('role').default('member'),
+    status: text('status').default('pending'), // pending, accepted, rejected, expired
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const fixedAssets = pgTable('fixed_assets', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    category: text('category').notNull(),
+    purchasePrice: numeric('purchase_price', { precision: 12, scale: 2 }).notNull(),
+    currentValue: numeric('current_value', { precision: 12, scale: 2 }).notNull(),
+    baseCurrencyValue: numeric('base_currency_value', { precision: 12, scale: 2 }),
+    baseCurrencyCode: text('base_currency_code'),
+    valuationDate: timestamp('valuation_date'),
+    appreciationRate: numeric('appreciation_rate', { precision: 5, scale: 2 }),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const assetValuations = pgTable('asset_valuations', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    assetId: uuid('asset_id').references(() => fixedAssets.id, { onDelete: 'cascade' }).notNull(),
+    value: numeric('value', { precision: 12, scale: 2 }).notNull(),
+    date: timestamp('date').defaultNow(),
+    source: text('source').default('manual'), // 'manual', 'market_adjustment', 'appraisal'
+});
+
+export const riskProfiles = pgTable('risk_profiles', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).unique().notNull(),
+    riskTolerance: text('risk_tolerance').notNull(), // 'low', 'medium', 'high', 'aggressive'
+    targetReturn: numeric('target_return', { precision: 5, scale: 2 }),
+    maxDrawdown: numeric('max_drawdown', { precision: 5, scale: 2 }),
+    preferredAssetMix: jsonb('preferred_asset_mix'), // { stocks: 60, bonds: 30, crypto: 10 }
+    updatedAt: timestamp('updated_at').defaultNow(),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const marketIndices = pgTable('market_indices', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    name: text('name').notNull().unique(), // 'S&P500', 'Gold', 'RealEstate_US'
+    currentValue: numeric('current_value', { precision: 12, scale: 2 }),
+    avgAnnualReturn: numeric('avg_annual_return', { precision: 5, scale: 2 }),
+    volatility: numeric('volatility', { precision: 5, scale: 2 }),
+    lastUpdated: timestamp('last_updated').defaultNow(),
+});
+
+export const arbitrageOpportunities = pgTable('arbitrage_opportunities', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    pair: text('pair').notNull(),
+    type: text('type').notNull(), // 'buy_signal', 'sell_signal'
+    currentRate: numeric('current_rate', { precision: 18, scale: 8 }),
+    predictedRate: numeric('predicted_rate', { precision: 18, scale: 8 }),
+    confidence: numeric('confidence', { precision: 5, scale: 2 }), // 0-100
+    expectedProfit: numeric('expected_profit', { precision: 5, scale: 2 }), // Percentage
+    validUntil: timestamp('valid_until'),
+    status: text('status').default('active'), // 'active', 'expired', 'executed'
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const priceHistory = pgTable('price_history', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    investmentId: uuid('investment_id').references(() => investments.id, { onDelete: 'cascade' }).notNull(),
+    symbol: text('symbol').notNull(),
+    date: timestamp('date').notNull(),
+    open: numeric('open', { precision: 12, scale: 4 }),
+    high: numeric('high', { precision: 12, scale: 4 }),
+    low: numeric('low', { precision: 12, scale: 4 }),
+    close: numeric('close', { precision: 12, scale: 4 }).notNull(),
+    volume: integer('volume'),
+    adjustedClose: numeric('adjusted_close', { precision: 12, scale: 4 }),
+    dividend: numeric('dividend', { precision: 10, scale: 4 }).default('0'),
+    splitRatio: doublePrecision('split_ratio').default(1),
+    currency: text('currency').default('USD'),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// ============================================================================
+// BLACK SWAN LIQUIDITY STRESS-TESTER (#272)
+// ============================================================================
+
+// Stress Test Scenarios - Simulates crisis events
+export const stressScenarios = pgTable('stress_scenarios', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    scenarioType: text('scenario_type').notNull(), // job_loss, market_crash, medical_emergency, recession
+    severity: text('severity').default('moderate'), // mild, moderate, severe, catastrophic
+    parameters: jsonb('parameters').notNull(), // { incomeReduction: 100%, marketDrop: 40%, duration: 6 }
+    status: text('status').default('pending'), // pending, running, completed, failed
+    createdAt: timestamp('created_at').defaultNow(),
+    completedAt: timestamp('completed_at'),
+});
+
+// Runway Calculations - Cash flow runway projections
+export const runwayCalculations = pgTable('runway_calculations', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    scenarioId: uuid('scenario_id').references(() => stressScenarios.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    currentBalance: numeric('current_balance', { precision: 15, scale: 2 }).notNull(),
+    monthlyBurnRate: numeric('monthly_burn_rate', { precision: 12, scale: 2 }).notNull(),
+    runwayDays: integer('runway_days').notNull(), // Days until cash runs out
+    zeroBalanceDate: timestamp('zero_balance_date'), // Exact date of depletion
+    criticalThresholdDate: timestamp('critical_threshold_date'), // Date when balance hits 20%
+    dailyProjections: jsonb('daily_projections').notNull(), // [{ date, balance, income, expenses }]
+    recommendations: jsonb('recommendations').default([]), // AI-generated survival strategies
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Liquidity Rescues - Automated emergency transfers
+export const liquidityRescues = pgTable('liquidity_rescues', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    scenarioId: uuid('scenario_id').references(() => stressScenarios.id, { onDelete: 'cascade' }),
+    triggerDate: timestamp('trigger_date').notNull(),
+    triggerReason: text('trigger_reason').notNull(), // balance_critical, runway_depleted, threshold_breach
+    sourceWalletId: uuid('source_wallet_id'), // Source for emergency funds
+    targetWalletId: uuid('target_wallet_id'), // Target wallet to rescue
+    transferAmount: numeric('transfer_amount', { precision: 12, scale: 2 }).notNull(),
+    status: text('status').default('pending'), // pending, executed, failed, cancelled
+    executedAt: timestamp('executed_at'),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Cash Flow Projections - AI-driven income/expense forecasts
+export const cashFlowProjections = pgTable('cash_flow_projections', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    projectionDate: timestamp('projection_date').notNull(),
+    projectedIncome: numeric('projected_income', { precision: 12, scale: 2 }).notNull(),
+    projectedExpenses: numeric('projected_expenses', { precision: 12, scale: 2 }).notNull(),
+    projectedBalance: numeric('projected_balance', { precision: 12, scale: 2 }).notNull(),
+    confidence: doublePrecision('confidence').default(0.85), // AI confidence score
+    modelType: text('model_type').default('arima'), // arima, lstm, prophet
+    seasonalFactors: jsonb('seasonal_factors').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
+}, (table) => ({
+    userDateIdx: index('idx_cash_flow_user_date').on(table.userId, table.projectionDate),
 }));
 
 export const outboxEventsRelations = relations(outboxEvents, ({ one }) => ({
