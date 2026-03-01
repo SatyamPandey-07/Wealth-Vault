@@ -5,6 +5,9 @@ import { relations } from 'drizzle-orm';
 // Enums for RBAC
 export const tenantRoleEnum = pgEnum('tenant_role', ['owner', 'admin', 'manager', 'member', 'viewer']);
 
+// Enums for advanced RBAC
+export const rbacEntityTypeEnum = pgEnum('rbac_entity_type', ['role', 'permission', 'member_role', 'member_permission']);
+
 // Tenants Table - Multi-tenancy support
 export const tenants = pgTable('tenants', {
     id: uuid('id').defaultRandom().primaryKey(),
@@ -51,6 +54,59 @@ export const tenantMembers = pgTable('tenant_members', {
     joinedAt: timestamp('joined_at').defaultNow(),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// RBAC Roles Table - Hierarchical role definitions per tenant
+export const rbacRoles = pgTable('rbac_roles', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    description: text('description'),
+    parentRoleId: uuid('parent_role_id'),
+    isSystem: boolean('is_system').default(false),
+    isActive: boolean('is_active').default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// RBAC Permissions Table - Permission definitions per tenant
+export const rbacPermissions = pgTable('rbac_permissions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    key: text('key').notNull(),
+    description: text('description'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// RBAC Role Permissions - Role to permission mapping
+export const rbacRolePermissions = pgTable('rbac_role_permissions', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    roleId: uuid('role_id').references(() => rbacRoles.id, { onDelete: 'cascade' }).notNull(),
+    permissionId: uuid('permission_id').references(() => rbacPermissions.id, { onDelete: 'cascade' }).notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Member Role Assignments - Assign one or more RBAC roles to tenant members
+export const tenantMemberRoles = pgTable('tenant_member_roles', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantMemberId: uuid('tenant_member_id').references(() => tenantMembers.id, { onDelete: 'cascade' }).notNull(),
+    roleId: uuid('role_id').references(() => rbacRoles.id, { onDelete: 'cascade' }).notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+});
+
+// RBAC Audit Log - Track all changes to RBAC entities
+export const rbacAuditLogs = pgTable('rbac_audit_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    entityType: rbacEntityTypeEnum('entity_type').notNull(),
+    entityId: uuid('entity_id'),
+    changes: jsonb('changes').default({}),
+    metadata: jsonb('metadata').default({}),
+    createdAt: timestamp('created_at').defaultNow(),
 });
 
 // Users Table
@@ -300,6 +356,7 @@ export const usersRelations = relations(users, ({ many }) => ({
     expenses: many(expenses),
     goals: many(goals),
     deviceSessions: many(deviceSessions),
+    rbacAuditLogs: many(rbacAuditLogs),
 }));
 
 export const tenantsRelations = relations(tenants, ({ one, many }) => ({
@@ -311,15 +368,77 @@ export const tenantsRelations = relations(tenants, ({ one, many }) => ({
     categories: many(categories),
     expenses: many(expenses),
     goals: many(goals),
+    rbacRoles: many(rbacRoles),
+    rbacPermissions: many(rbacPermissions),
+    rbacAuditLogs: many(rbacAuditLogs),
 }));
 
-export const tenantMembersRelations = relations(tenantMembers, ({ one }) => ({
+export const tenantMembersRelations = relations(tenantMembers, ({ one, many }) => ({
     tenant: one(tenants, {
         fields: [tenantMembers.tenantId],
         references: [tenants.id],
     }),
     user: one(users, {
         fields: [tenantMembers.userId],
+        references: [users.id],
+    }),
+    memberRoles: many(tenantMemberRoles),
+}));
+
+export const rbacRolesRelations = relations(rbacRoles, ({ one, many }) => ({
+    tenant: one(tenants, {
+        fields: [rbacRoles.tenantId],
+        references: [tenants.id],
+    }),
+    parentRole: one(rbacRoles, {
+        fields: [rbacRoles.parentRoleId],
+        references: [rbacRoles.id],
+        relationName: 'rbac_role_hierarchy'
+    }),
+    childRoles: many(rbacRoles, {
+        relationName: 'rbac_role_hierarchy'
+    }),
+    rolePermissions: many(rbacRolePermissions),
+    memberRoles: many(tenantMemberRoles),
+}));
+
+export const rbacPermissionsRelations = relations(rbacPermissions, ({ one, many }) => ({
+    tenant: one(tenants, {
+        fields: [rbacPermissions.tenantId],
+        references: [tenants.id],
+    }),
+    rolePermissions: many(rbacRolePermissions),
+}));
+
+export const rbacRolePermissionsRelations = relations(rbacRolePermissions, ({ one }) => ({
+    role: one(rbacRoles, {
+        fields: [rbacRolePermissions.roleId],
+        references: [rbacRoles.id],
+    }),
+    permission: one(rbacPermissions, {
+        fields: [rbacRolePermissions.permissionId],
+        references: [rbacPermissions.id],
+    }),
+}));
+
+export const tenantMemberRolesRelations = relations(tenantMemberRoles, ({ one }) => ({
+    tenantMember: one(tenantMembers, {
+        fields: [tenantMemberRoles.tenantMemberId],
+        references: [tenantMembers.id],
+    }),
+    role: one(rbacRoles, {
+        fields: [tenantMemberRoles.roleId],
+        references: [rbacRoles.id],
+    }),
+}));
+
+export const rbacAuditLogsRelations = relations(rbacAuditLogs, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [rbacAuditLogs.tenantId],
+        references: [tenants.id],
+    }),
+    actor: one(users, {
+        fields: [rbacAuditLogs.actorUserId],
         references: [users.id],
     }),
 }));
