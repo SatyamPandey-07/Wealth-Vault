@@ -155,6 +155,9 @@ import taxHarvestScanner from "./jobs/taxHarvestScanner.js";
 import washSaleExpirationJob from "./jobs/washSaleExpirationJob.js";
 import { initializeLiquidityListeners } from "./listeners/liquidityListeners.js";
 import workflowEngine from "./services/workflowEngine.js"; // Bootstrap event hooks
+import healthRoutes from "./routes/health.js";
+import performanceRoutes from "./routes/performance.js";
+import tenantRoutes from "./routes/tenants.js";
 
 // Load environment variables
 dotenv.config();
@@ -330,6 +333,7 @@ app.use("/api/debts", userLimiter, debtRoutes);
 app.use("/api/wallets", userLimiter, walletRoutes);
 app.use("/api/fx", userLimiter, fxRoutes);
 app.use("/api/forecasts", userLimiter, forecastRoutes);
+app.use("/api/monte-carlo", userLimiter, monteCarloRoutes);
 app.use("/api/gemini", aiLimiter, geminiRouter);
 app.use("/api/currencies", userLimiter, currenciesRoutes);
 app.use("/api/audit", userLimiter, auditRoutes);
@@ -368,6 +372,9 @@ app.use("/api/dynasty-trusts", userLimiter, dynastyTrustsRoutes);
 app.use("/api/spv", userLimiter, spvOwnershipRoutes);
 
 
+app.use("/api/health", healthRoutes);
+app.use("/api/performance", userLimiter, performanceRoutes);
+app.use("/api/tenants", userLimiter, tenantRoutes);
 
 
 // Family Financial Planning routes
@@ -399,6 +406,7 @@ const PORT = process.env.PORT || 5000;
 if (process.env.NODE_ENV !== 'test') {
   cascadeMonitorJob.start();
   topologyGarbageCollector.start();
+  wealthSimulationJob.start();
   app.listen(PORT, () => {
     logInfo('Server started successfully', {
       port: PORT,
@@ -418,6 +426,7 @@ if (process.env.NODE_ENV !== 'test') {
     scheduleMonthlyReports();
     scheduleWeeklyHabitDigest();
     scheduleTaxReminders();
+    scheduleRecoveryExpirationJob();
     subscriptionMonitor.initialize();
     fxRateSync.start();
     valuationUpdater.start();
@@ -475,6 +484,7 @@ if (process.env.NODE_ENV !== 'test') {
     irsRateSyncJob.start();
     annuityExecutionJob.start();
     capitalCallIssuerJob.start();
+    scheduleNightlySimulations();
 
     // Add debt services to app.locals for middleware/route access
     app.locals.debtEngine = debtEngine;
