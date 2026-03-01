@@ -135,6 +135,9 @@ import cascadeMonitorJob from "./jobs/cascadeMonitorJob.js";
 import topologyGarbageCollector from "./jobs/topologyGarbageCollector.js";
 import escrowValuationJob from "./jobs/escrowValuationJob.js";
 import hedgeDecayMonitor from "./jobs/hedgeDecayMonitor.js";
+import dynastyTrustsRoutes from "./routes/dynastyTrusts.js";
+import irsRateSyncJob from "./jobs/irsRateSyncJob.js";
+import annuityExecutionJob from "./jobs/annuityExecutionJob.js";
 
 // Event Listeners
 import { initializeBudgetListeners } from "./listeners/budgetListeners.js";
@@ -359,6 +362,7 @@ app.use("/api/corporate", userLimiter, corporateRoutes);
 app.use("/api/succession-plan", userLimiter, successionApiRoutes);
 app.use("/api/compliance", complianceRoutes);
 app.use("/api/liquidity/graph", userLimiter, liquidityGraphRoutes);
+app.use("/api/dynasty-trusts", userLimiter, dynastyTrustsRoutes);
 
 
 
@@ -465,6 +469,8 @@ if (process.env.NODE_ENV !== 'test') {
     auditTrailSealer.start();
     taxHarvestScanner.start();
     washSaleExpirationJob.start();
+    irsRateSyncJob.start();
+    annuityExecutionJob.start();
 
     // Add debt services to app.locals for middleware/route access
     app.locals.debtEngine = debtEngine;
