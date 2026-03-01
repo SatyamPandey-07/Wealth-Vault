@@ -1,6 +1,57 @@
 
-import { pgTable, uuid, text, boolean, integer, numeric, timestamp, jsonb, doublePrecision } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, boolean, integer, numeric, timestamp, jsonb, doublePrecision, pgEnum } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+
+// Enums for RBAC
+export const tenantRoleEnum = pgEnum('tenant_role', ['owner', 'admin', 'manager', 'member', 'viewer']);
+
+// Tenants Table - Multi-tenancy support
+export const tenants = pgTable('tenants', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull().unique(), // URL-friendly identifier
+    description: text('description'),
+    logo: text('logo'),
+    ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'restrict' }).notNull(),
+    status: text('status').default('active'), // active, suspended, deleted
+    tier: text('tier').default('free'), // free, pro, enterprise
+    maxMembers: integer('max_members').default(5),
+    maxProjects: integer('max_projects').default(3),
+    features: jsonb('features').default({
+        ai: false,
+        customReports: false,
+        teamCollaboration: false,
+        advancedAnalytics: false
+    }),
+    settings: jsonb('settings').default({
+        currency: 'USD',
+        timezone: 'UTC',
+        language: 'en',
+        theme: 'auto'
+    }),
+    metadata: jsonb('metadata').default({
+        createdBy: 'system',
+        lastModified: null,
+        joinCode: null
+    }),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Tenant Members Table - Manage team members and roles
+export const tenantMembers = pgTable('tenant_members', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    role: tenantRoleEnum('role').default('member'),
+    permissions: jsonb('permissions').default([]), // Custom permissions override
+    status: text('status').default('active'), // active, pending, invited, deleted
+    inviteToken: text('invite_token'), // For pending invites
+    inviteExpiresAt: timestamp('invite_expires_at'),
+    joinedAt: timestamp('joined_at').defaultNow(),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
 
 // Users Table
 export const users = pgTable('users', {
@@ -30,6 +81,7 @@ export const users = pgTable('users', {
 // Categories Table
 export const categories = pgTable('categories', {
     id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     name: text('name').notNull(),
     description: text('description'),
@@ -54,6 +106,7 @@ export const categories = pgTable('categories', {
 // Expenses Table
 export const expenses = pgTable('expenses', {
     id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null', onUpdate: 'cascade' }),
     amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
@@ -82,6 +135,7 @@ export const expenses = pgTable('expenses', {
 // Goals Table
 export const goals = pgTable('goals', {
     id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
     categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null', onUpdate: 'cascade' }),
     title: text('title').notNull(),
@@ -141,13 +195,41 @@ export const tokenBlacklist = pgTable('token_blacklist', {
 
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
+    ownedTenants: many(tenants),
+    tenantMembers: many(tenantMembers),
     categories: many(categories),
     expenses: many(expenses),
     goals: many(goals),
     deviceSessions: many(deviceSessions),
 }));
 
+export const tenantsRelations = relations(tenants, ({ one, many }) => ({
+    owner: one(users, {
+        fields: [tenants.ownerId],
+        references: [users.id],
+    }),
+    members: many(tenantMembers),
+    categories: many(categories),
+    expenses: many(expenses),
+    goals: many(goals),
+}));
+
+export const tenantMembersRelations = relations(tenantMembers, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [tenantMembers.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [tenantMembers.userId],
+        references: [users.id],
+    }),
+}));
+
 export const categoriesRelations = relations(categories, ({ one, many }) => ({
+    tenant: one(tenants, {
+        fields: [categories.tenantId],
+        references: [tenants.id],
+    }),
     user: one(users, {
         fields: [categories.userId],
         references: [users.id],
@@ -165,6 +247,10 @@ export const categoriesRelations = relations(categories, ({ one, many }) => ({
 }));
 
 export const expensesRelations = relations(expenses, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [expenses.tenantId],
+        references: [tenants.id],
+    }),
     user: one(users, {
         fields: [expenses.userId],
         references: [users.id],
@@ -176,6 +262,10 @@ export const expensesRelations = relations(expenses, ({ one }) => ({
 }));
 
 export const goalsRelations = relations(goals, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [goals.tenantId],
+        references: [tenants.id],
+    }),
     user: one(users, {
         fields: [goals.userId],
         references: [users.id],
