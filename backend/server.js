@@ -13,6 +13,9 @@ import { connectRedis } from "./config/redis.js";
 import { scheduleCleanup } from "./jobs/tokenCleanup.js";
 import { scheduleRatesSync, runImmediateSync } from "./jobs/syncRates.js";
 import { initializeUploads } from "./middleware/fileUpload.js";
+import outboxDispatcher from "./jobs/outboxDispatcher.js";
+import certificateRotation from "./jobs/certificateRotation.js";
+import "./services/sagaDefinitions.js"; // Register saga definitions
 import { createFileServerRoute } from "./middleware/secureFileServer.js";
 import {
   generalLimiter,
@@ -20,6 +23,7 @@ import {
   userLimiter,
 } from "./middleware/rateLimiter.js";
 import { requestIdMiddleware, requestLogger, errorLogger, analyticsMiddleware } from "./middleware/requestLogger.js";
+import { auditLogger } from "./middleware/auditLogger.js";
 import { performanceMiddleware } from "./services/performanceMonitor.js";
 import { logInfo, logError } from "./utils/logger.js";
 import { sanitizeInput, sanitizeMongo } from "./middleware/sanitizer.js";
@@ -43,6 +47,15 @@ import budgetAlertsRoutes from "./routes/budgetAlerts.js";
 // Load environment variables
 dotenv.config();
 
+// Initialize DB Router (with read/write split)
+initializeDBRouter()
+  .then(() => {
+    console.log('🔄 DB Router initialized (read/write split enabled)');
+  })
+  .catch(err => {
+    console.warn('⚠️ DB Router initialization failed, using primary only:', err.message);
+  });
+
 // Initialize Redis connection
 connectRedis().catch((err) => {
   console.warn("⚠️ Redis connection failed, using memory-based rate limiting");
@@ -51,18 +64,13 @@ connectRedis().catch((err) => {
 // Schedule token cleanup job
 scheduleCleanup();
 
-// Schedule exchange rates sync job
-scheduleRatesSync();
+// Start outbox event dispatcher
+outboxDispatcher.start();
+console.log('📤 Outbox dispatcher started');
 
-// Run initial exchange rates sync
-runImmediateSync().then(() => {
-  console.log('✅ Initial exchange rates sync completed');
-}).catch(err => {
-  console.warn('⚠️ Initial exchange rates sync failed:', err.message);
-});
-
-// Schedule weekly habit digest job
-scheduleWeeklyHabitDigest();
+// Start certificate rotation job
+certificateRotation.start();
+console.log('🔐 Certificate rotation job started');
 
 // Initiliz uplod directorys
 initializeUploads().catch((err) => {
@@ -145,12 +153,19 @@ app.use(sanitizeInput);
 app.use(responseWrapper);
 app.use(paginationMiddleware());
 
-// Logging and monitoring middleware
+// Database routing middleware (read/write split)
+app.use(attachDBConnection({
+  enableSessionTracking: true,
+  preferReplicas: process.env.PREFER_REPLICAS !== 'false'
+}));
+
+// Logng and monitrng midlware
 app.use(requestIdMiddleware);
 app.use(auditRequestIdMiddleware); // Add audit request correlation
 app.use(requestLogger);
 app.use(performanceMiddleware);
 app.use(analyticsMiddleware);
+app.use(auditLogger);
 
 // Additional CORS headers middleware
 app.use((req, res, next) => {
@@ -220,6 +235,8 @@ app.use("/api/gemini", aiLimiter, geminiRouter);
 app.use("/api/health", healthRoutes);
 app.use("/api/performance", userLimiter, performanceRoutes);
 app.use("/api/tenants", userLimiter, tenantRoutes);
+app.use("/api/audit", userLimiter, auditRoutes);
+app.use("/api/db-router", userLimiter, dbRouterRoutes);
 
 
 // Family Financial Planning routes
@@ -242,6 +259,9 @@ app.use(notFound);
 
 // Add error logging middleware
 app.use(errorLogger);
+
+// DB routing error handler (must be before general error handler)
+app.use(dbRoutingErrorHandler());
 
 // Centralized error handling middleware (must be last)
 app.use(globalErrorHandler);

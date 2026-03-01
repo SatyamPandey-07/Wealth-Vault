@@ -27,6 +27,14 @@ import {
   getTierFeatures
 } from '../services/tenantService.js';
 import {
+  extractTenantRegionConfig,
+  getRegionMetrics,
+  getTenantFailoverRunbook,
+  recordFailoverDrill,
+  updateTenantResidencyPolicy
+} from '../services/multiRegionService.js';
+import { enforceTenantRegionRouting, enforceResidencyDataClass } from '../middleware/regionRouting.js';
+import {
   listTenantRoles,
   createTenantRole,
   updateTenantRole,
@@ -71,14 +79,16 @@ router.post(
   validateRequest,
   async (req, res) => {
     try {
-      const { name, description = '', slug, tier = 'free' } = req.body;
+      const { name, description = '', slug, tier = 'free', homeRegion, residencyPolicy } = req.body;
 
       const tenantData = {
         name,
         description,
         ownerId: req.user.id,
         tier,
-        slug: slug ? slug.toLowerCase() : undefined
+        slug: slug ? slug.toLowerCase() : undefined,
+        homeRegion,
+        residencyPolicy
       };
 
       const { tenant, message } = await createTenant(tenantData);
@@ -145,9 +155,11 @@ router.get(
   '/:tenantId',
   protect,
   validateTenantAccess,
+  enforceTenantRegionRouting(),
   async (req, res) => {
     try {
       const tenant = await getTenant(req.params.tenantId);
+      const regionConfig = extractTenantRegionConfig(tenant);
 
       return res.status(200).json({
         success: true,
@@ -161,6 +173,8 @@ router.get(
           settings: tenant.settings,
           memberCount: tenant.memberCount,
           maxMembers: tenant.maxMembers,
+          homeRegion: regionConfig.homeRegion,
+          residencyPolicy: regionConfig.residencyPolicy,
           createdAt: tenant.createdAt,
           updatedAt: tenant.updatedAt
         }
@@ -183,27 +197,183 @@ router.put(
   '/:tenantId',
   protect,
   validateTenantAccess,
+  enforceTenantRegionRouting(),
+  enforceResidencyDataClass(),
   requireTenantRole(['owner', 'admin']),
   [
     body('name').optional().notEmpty().withMessage('Name cannot be empty'),
     body('description').optional().isString(),
-    body('settings').optional().isObject()
+    body('settings').optional().isObject(),
+    body('homeRegion').optional().isString(),
+    body('residencyPolicy').optional().isObject()
   ],
   validateRequest,
   async (req, res) => {
     try {
-      const { name, description, settings } = req.body;
-      
-      // TODO: Implement update logic with Drizzle update
+      const { homeRegion, residencyPolicy } = req.body;
+
+      if (homeRegion || residencyPolicy) {
+        const updated = await updateTenantResidencyPolicy({
+          tenantId: req.params.tenantId,
+          homeRegion,
+          residencyPolicy: residencyPolicy || {},
+          actorUserId: req.user.id
+        });
+
+        return res.status(200).json({
+          success: true,
+          message: 'Tenant residency policy updated successfully',
+          data: updated
+        });
+      }
+
       return res.status(200).json({
         success: true,
-        message: 'Tenant updated successfully'
+        message: 'No residency update requested'
       });
     } catch (error) {
       logger.error('Error updating tenant:', error);
       return res.status(500).json({
         success: false,
-        message: 'Error updating tenant'
+        message: error.message || 'Error updating tenant'
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/tenants/:tenantId/residency
+ * Get tenant residency and region routing profile
+ */
+router.get(
+  '/:tenantId/residency',
+  protect,
+  validateTenantAccess,
+  enforceTenantRegionRouting(),
+  async (req, res) => {
+    try {
+      const tenant = await getTenant(req.params.tenantId);
+      const regionProfile = extractTenantRegionConfig(tenant);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          tenantId: tenant.id,
+          homeRegion: regionProfile.homeRegion,
+          residencyPolicy: regionProfile.residencyPolicy,
+          regionMetrics: getRegionMetrics()
+        }
+      });
+    } catch (error) {
+      logger.error('Error fetching tenant residency profile:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || 'Error fetching tenant residency profile'
+      });
+    }
+  }
+);
+
+/**
+ * PUT /api/tenants/:tenantId/residency
+ * Update tenant home region and residency policy
+ */
+router.put(
+  '/:tenantId/residency',
+  protect,
+  validateTenantAccess,
+  enforceTenantRegionRouting(),
+  requireTenantRole(['owner', 'admin']),
+  [
+    body('homeRegion').optional().isString(),
+    body('residencyPolicy').optional().isObject()
+  ],
+  validateRequest,
+  async (req, res) => {
+    try {
+      const updated = await updateTenantResidencyPolicy({
+        tenantId: req.params.tenantId,
+        homeRegion: req.body.homeRegion,
+        residencyPolicy: req.body.residencyPolicy || {},
+        actorUserId: req.user.id
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Tenant residency policy updated successfully',
+        data: updated
+      });
+    } catch (error) {
+      logger.error('Error updating tenant residency policy:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || 'Error updating tenant residency policy'
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/tenants/:tenantId/failover/runbook
+ * Get tenant failover runbook and RPO/RTO targets
+ */
+router.get(
+  '/:tenantId/failover/runbook',
+  protect,
+  validateTenantAccess,
+  enforceTenantRegionRouting(),
+  requireTenantRole(['owner', 'admin', 'manager']),
+  async (req, res) => {
+    try {
+      const tenant = await getTenant(req.params.tenantId);
+      const runbook = getTenantFailoverRunbook(tenant);
+
+      return res.status(200).json({
+        success: true,
+        data: runbook
+      });
+    } catch (error) {
+      logger.error('Error fetching tenant failover runbook:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || 'Error fetching tenant failover runbook'
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/tenants/:tenantId/failover/drill
+ * Record failover drill execution for RPO/RTO evidence
+ */
+router.post(
+  '/:tenantId/failover/drill',
+  protect,
+  validateTenantAccess,
+  enforceTenantRegionRouting(),
+  requireTenantRole(['owner', 'admin']),
+  [
+    body('notes').optional().isString()
+  ],
+  validateRequest,
+  async (req, res) => {
+    try {
+      const result = await recordFailoverDrill({
+        tenantId: req.params.tenantId,
+        actorUserId: req.user.id,
+        notes: req.body.notes || ''
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Failover drill recorded',
+        data: result
+      });
+    } catch (error) {
+      logger.error('Error recording failover drill:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || 'Error recording failover drill'
       });
     }
   }
