@@ -15,6 +15,78 @@ import logger from '../utils/logger.js';
  */
 
 class CertificateService {
+    constructor() {
+        // Validate encryption key on initialization
+        this.validateEncryptionKey();
+    }
+
+    /**
+     * Validate that the encryption key is properly configured
+     * @private
+     * @throws {Error} If encryption key is not configured or invalid
+     */
+    validateEncryptionKey() {
+        const key = process.env.SERVICE_KEY_ENCRYPTION_KEY;
+        
+        if (!key) {
+            throw new Error(
+                'CRITICAL: SERVICE_KEY_ENCRYPTION_KEY environment variable is not set. ' +
+                'This is required for encrypting service private keys. ' +
+                'Generate a secure 32-byte key using: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))")'
+            );
+        }
+
+        // Validate key format and length
+        let keyBuffer;
+        try {
+            // Support both hex-encoded (64 chars) and base64-encoded keys
+            if (key.length === 64 && /^[0-9a-f]+$/i.test(key)) {
+                keyBuffer = Buffer.from(key, 'hex');
+            } else {
+                keyBuffer = Buffer.from(key, 'base64');
+            }
+        } catch (error) {
+            throw new Error(
+                'CRITICAL: SERVICE_KEY_ENCRYPTION_KEY is not properly formatted. ' +
+                'Key must be either 64 hex characters or base64-encoded 32 bytes.'
+            );
+        }
+
+        if (keyBuffer.length !== 32) {
+            throw new Error(
+                `CRITICAL: SERVICE_KEY_ENCRYPTION_KEY must be exactly 32 bytes. ` +
+                `Received ${keyBuffer.length} bytes. ` +
+                'Generate a new key using: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))")'
+            );
+        }
+
+        logger.info('✅ Service certificate encryption key validated successfully');
+    }
+
+    /**
+     * Get the encryption key as a Buffer
+     * @private
+     * @returns {Buffer} Encryption key
+     * @throws {Error} If key is not configured
+     */
+    getEncryptionKey() {
+        const key = process.env.SERVICE_KEY_ENCRYPTION_KEY;
+        
+        if (!key) {
+            throw new Error(
+                'CRITICAL: SERVICE_KEY_ENCRYPTION_KEY is not set. ' +
+                'Service cannot encrypt/decrypt private keys. ' +
+                'This should have been caught during initialization.'
+            );
+        }
+
+        // Parse key (support hex or base64)
+        if (key.length === 64 && /^[0-9a-f]+$/i.test(key)) {
+            return Buffer.from(key, 'hex');
+        }
+        return Buffer.from(key, 'base64');
+    }
+
     /**
      * Register a new service identity
      * @param {Object} serviceData - Service registration data
@@ -156,53 +228,117 @@ class CertificateService {
     }
 
     /**
-     * Encrypt private key for storage (placeholder - use proper encryption in production)
+     * Encrypt private key for storage using AES-256-GCM
      * @param {string} privateKey - Private key in PEM format
-     * @returns {string} Encrypted private key
+     * @returns {string} Encrypted private key (JSON string)
      * @private
+     * @throws {Error} If encryption fails or key is not configured
+     * 
+     * NOTE: For production, consider using:
+     * - AWS KMS (Key Management Service)
+     * - Azure Key Vault
+     * - HashiCorp Vault
+     * - Google Cloud KMS
+     * - Hardware Security Module (HSM)
      */
     encryptPrivateKey(privateKey) {
-        // In production, use KMS or HSM for key encryption
-        // For now, we'll use a basic encryption (NOT SECURE FOR PRODUCTION)
-        const algorithm = 'aes-256-gcm';
-        const key = process.env.SERVICE_KEY_ENCRYPTION_KEY || crypto.randomBytes(32);
-        const iv = crypto.randomBytes(16);
-        
-        const cipher = crypto.createCipheriv(algorithm, key, iv);
-        let encrypted = cipher.update(privateKey, 'utf8', 'hex');
-        encrypted += cipher.final('hex');
-        
-        const authTag = cipher.getAuthTag();
-        
-        return JSON.stringify({
-            encrypted,
-            iv: iv.toString('hex'),
-            authTag: authTag.toString('hex'),
-            algorithm
-        });
+        try {
+            if (!privateKey || typeof privateKey !== 'string') {
+                throw new Error('Private key must be a non-empty string');
+            }
+
+            const algorithm = 'aes-256-gcm';
+            const key = this.getEncryptionKey();
+            const iv = crypto.randomBytes(16);
+            
+            const cipher = crypto.createCipheriv(algorithm, key, iv);
+            let encrypted = cipher.update(privateKey, 'utf8', 'hex');
+            encrypted += cipher.final('hex');
+            
+            const authTag = cipher.getAuthTag();
+            
+            // Include version for future key rotation support
+            const encryptedData = {
+                version: 1,
+                algorithm,
+                encrypted,
+                iv: iv.toString('hex'),
+                authTag: authTag.toString('hex'),
+                timestamp: new Date().toISOString()
+            };
+
+            return JSON.stringify(encryptedData);
+        } catch (error) {
+            logger.error('Private key encryption failed', {
+                error: error.message,
+                stack: error.stack
+            });
+            throw new Error(`Failed to encrypt private key: ${error.message}`);
+        }
     }
 
     /**
-     * Decrypt private key (placeholder)
-     * @param {string} encryptedKey - Encrypted private key
-     * @returns {string} Decrypted private key
+     * Decrypt private key
+     * @param {string} encryptedKey - Encrypted private key (JSON string)
+     * @returns {string} Decrypted private key in PEM format
      * @private
+     * @throws {Error} If decryption fails or key is not configured
      */
     decryptPrivateKey(encryptedKey) {
-        const { encrypted, iv, authTag, algorithm } = JSON.parse(encryptedKey);
-        const key = process.env.SERVICE_KEY_ENCRYPTION_KEY || crypto.randomBytes(32);
-        
-        const decipher = crypto.createDecipheriv(
-            algorithm,
-            key,
-            Buffer.from(iv, 'hex')
-        );
-        decipher.setAuthTag(Buffer.from(authTag, 'hex'));
-        
-        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        
-        return decrypted;
+        try {
+            if (!encryptedKey || typeof encryptedKey !== 'string') {
+                throw new Error('Encrypted key must be a non-empty string');
+            }
+
+            let encryptedData;
+            try {
+                encryptedData = JSON.parse(encryptedKey);
+            } catch (error) {
+                throw new Error('Invalid encrypted key format: not valid JSON');
+            }
+
+            const { version = 1, encrypted, iv, authTag, algorithm } = encryptedData;
+
+            // Validate required fields
+            if (!encrypted || !iv || !authTag || !algorithm) {
+                throw new Error('Missing required fields in encrypted key data');
+            }
+
+            // Support for key rotation - check version
+            if (version !== 1) {
+                throw new Error(`Unsupported encryption version: ${version}. This may require key migration.`);
+            }
+
+            const key = this.getEncryptionKey();
+            
+            const decipher = crypto.createDecipheriv(
+                algorithm,
+                key,
+                Buffer.from(iv, 'hex')
+            );
+            decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+            
+            let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+            decrypted += decipher.final('utf8');
+            
+            return decrypted;
+        } catch (error) {
+            logger.error('Private key decryption failed', {
+                error: error.message,
+                stack: error.stack
+            });
+            
+            // Provide more helpful error messages
+            if (error.message.includes('bad decrypt') || error.message.includes('Unsupported state')) {
+                throw new Error(
+                    'Failed to decrypt private key. ' +
+                    'This usually means the SERVICE_KEY_ENCRYPTION_KEY has changed or is incorrect. ' +
+                    'Original error: ' + error.message
+                );
+            }
+            
+            throw new Error(`Failed to decrypt private key: ${error.message}`);
+        }
     }
 
     /**
