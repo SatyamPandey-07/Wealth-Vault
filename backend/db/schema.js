@@ -159,6 +159,7 @@ export const users = pgTable('users', {
     lastLogin: timestamp('last_login').defaultNow(),
     mfaEnabled: boolean('mfa_enabled').default(false),
     mfaSecret: text('mfa_secret'),
+    mfaRecoveryCodes: jsonb('mfa_recovery_codes').default([]),
     preferences: jsonb('preferences').default({
         notifications: { email: true, push: true, sms: false },
         theme: 'auto',

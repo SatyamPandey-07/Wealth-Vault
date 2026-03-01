@@ -78,6 +78,8 @@ export const AuthForm: React.FC<{ mode?: "login" | "register" }> = ({ mode = "lo
   const [showPassword, setShowPassword] = useState(false);
   const [showProfileSetup, setShowProfileSetup] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [mfaToken, setMfaToken] = useState("");
 
   // Login form
   const loginForm = useForm<LoginFormData>({
@@ -106,13 +108,27 @@ export const AuthForm: React.FC<{ mode?: "login" | "register" }> = ({ mode = "lo
     loginForm.reset();
     registerForm.reset();
     setAuthError("");
+    setMfaRequired(false);
+    setMfaToken("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSignUp]);
 
   const handleLoginSubmit = async (data: LoginFormData) => {
     setAuthError("");
-    const result = await signIn(data.email, data.password);
-    if (!result.success) setAuthError("Invalid credentials");
+    const result = await signIn(data.email, data.password, mfaRequired ? mfaToken : undefined);
+    
+    if (!result.success) {
+      if (result.mfaRequired) {
+        setMfaRequired(true);
+        setAuthError("MFA token required. Please enter your 6-digit code from your authenticator app.");
+      } else {
+        setAuthError(result.error || "Invalid credentials");
+      }
+    } else {
+      // Reset MFA state on successful login
+      setMfaRequired(false);
+      setMfaToken("");
+    }
   };
 
   const handleRegisterSubmit = async (data: RegisterFormData) => {
@@ -237,8 +253,29 @@ export const AuthForm: React.FC<{ mode?: "login" | "register" }> = ({ mode = "lo
                           <p className="text-sm text-red-500 mt-1">{loginForm.formState.errors.password.message}</p>
                         )}
                       </div>
+                      
+                      {/* MFA Token Field - Only show when MFA is required */}
+                      {mfaRequired && (
+                        <div className="space-y-1">
+                          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">MFA Code</label>
+                          <div className="relative">
+                            <input
+                              value={mfaToken}
+                              onChange={(e) => setMfaToken(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                              className="block w-full px-4 py-3 rounded-xl bg-white dark:bg-slate-900/50 border focus:ring-2 focus:ring-primary text-gray-900 dark:text-white outline-none border-gray-200 dark:border-slate-600 text-center text-lg font-mono tracking-widest"
+                              type="text"
+                              placeholder="000000"
+                              maxLength={6}
+                              autoComplete="one-time-code"
+                            />
+                            <Shield className="absolute right-3 top-3 text-gray-400" size={18} />
+                          </div>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 text-center">Enter the 6-digit code from your authenticator app</p>
+                        </div>
+                      )}
+                      
                       <Button disabled={loading} type="submit" className="w-full py-3 bg-primary hover:bg-primary-dark text-white rounded-xl font-semibold shadow-lg transition-transform active:scale-95">
-                        Unlock Vault
+                        {mfaRequired ? 'Verify & Login' : 'Unlock Vault'}
                       </Button>
                     </form>
                     <div className="text-center mt-6">
