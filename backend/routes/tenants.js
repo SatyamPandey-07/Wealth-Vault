@@ -11,6 +11,7 @@ import { protect } from '../middleware/auth.js';
 import {
   validateTenantAccess,
   requireTenantRole,
+  requireTenantPermission,
   extractTenantId
 } from '../middleware/tenantMiddleware.js';
 import {
@@ -25,6 +26,17 @@ import {
   hasPermission,
   getTierFeatures
 } from '../services/tenantService.js';
+import {
+  listTenantRoles,
+  createTenantRole,
+  updateTenantRole,
+  deleteTenantRole,
+  listTenantPermissions,
+  createTenantPermission,
+  assignRolesToMember,
+  setMemberCustomPermissions,
+  getMemberByUserId
+} from '../services/rbacService.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -397,6 +409,309 @@ router.post(
 );
 
 // ============== TENANT SETTINGS ==============
+
+/**
+ * GET /api/tenants/:tenantId/rbac/roles
+ * List all RBAC roles in tenant
+ */
+router.get(
+  '/:tenantId/rbac/roles',
+  protect,
+  validateTenantAccess,
+  requireTenantPermission(['rbac:role:manage', 'member:view']),
+  async (req, res) => {
+    try {
+      const roles = await listTenantRoles(req.params.tenantId);
+
+      return res.status(200).json({
+        success: true,
+        data: roles
+      });
+    } catch (error) {
+      logger.error('Error fetching RBAC roles:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || 'Error fetching RBAC roles'
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/tenants/:tenantId/rbac/roles
+ * Create a custom RBAC role
+ */
+router.post(
+  '/:tenantId/rbac/roles',
+  protect,
+  validateTenantAccess,
+  requireTenantPermission(['rbac:role:manage']),
+  [
+    body('name').notEmpty().withMessage('Role name is required'),
+    body('slug').matches(/^[a-z0-9-_]+$/).withMessage('Invalid role slug'),
+    body('description').optional().isString(),
+    body('parentRoleId').optional({ nullable: true }).isUUID().withMessage('Invalid parent role ID'),
+    body('permissionKeys').optional().isArray().withMessage('permissionKeys must be an array')
+  ],
+  validateRequest,
+  async (req, res) => {
+    try {
+      const role = await createTenantRole({
+        tenantId: req.params.tenantId,
+        name: req.body.name,
+        slug: req.body.slug,
+        description: req.body.description,
+        parentRoleId: req.body.parentRoleId || null,
+        permissionKeys: req.body.permissionKeys || [],
+        actorUserId: req.user.id
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: 'RBAC role created successfully',
+        data: role
+      });
+    } catch (error) {
+      logger.error('Error creating RBAC role:', error);
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Error creating RBAC role'
+      });
+    }
+  }
+);
+
+/**
+ * PUT /api/tenants/:tenantId/rbac/roles/:roleId
+ * Update a RBAC role
+ */
+router.put(
+  '/:tenantId/rbac/roles/:roleId',
+  protect,
+  validateTenantAccess,
+  requireTenantPermission(['rbac:role:manage']),
+  [
+    body('name').optional().notEmpty().withMessage('Role name cannot be empty'),
+    body('description').optional().isString(),
+    body('parentRoleId').optional({ nullable: true }).isUUID().withMessage('Invalid parent role ID'),
+    body('isActive').optional().isBoolean().withMessage('isActive must be boolean'),
+    body('permissionKeys').optional().isArray().withMessage('permissionKeys must be an array')
+  ],
+  validateRequest,
+  async (req, res) => {
+    try {
+      const role = await updateTenantRole({
+        tenantId: req.params.tenantId,
+        roleId: req.params.roleId,
+        name: req.body.name,
+        description: req.body.description,
+        parentRoleId: req.body.parentRoleId,
+        isActive: req.body.isActive,
+        permissionKeys: req.body.permissionKeys,
+        actorUserId: req.user.id
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'RBAC role updated successfully',
+        data: role
+      });
+    } catch (error) {
+      logger.error('Error updating RBAC role:', error);
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Error updating RBAC role'
+      });
+    }
+  }
+);
+
+/**
+ * DELETE /api/tenants/:tenantId/rbac/roles/:roleId
+ * Delete a custom RBAC role
+ */
+router.delete(
+  '/:tenantId/rbac/roles/:roleId',
+  protect,
+  validateTenantAccess,
+  requireTenantPermission(['rbac:role:manage']),
+  async (req, res) => {
+    try {
+      await deleteTenantRole({
+        tenantId: req.params.tenantId,
+        roleId: req.params.roleId,
+        actorUserId: req.user.id
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'RBAC role deleted successfully'
+      });
+    } catch (error) {
+      logger.error('Error deleting RBAC role:', error);
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Error deleting RBAC role'
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/tenants/:tenantId/rbac/permissions
+ * List all RBAC permissions in tenant
+ */
+router.get(
+  '/:tenantId/rbac/permissions',
+  protect,
+  validateTenantAccess,
+  requireTenantPermission(['rbac:permission:manage', 'member:view']),
+  async (req, res) => {
+    try {
+      const permissions = await listTenantPermissions(req.params.tenantId);
+
+      return res.status(200).json({
+        success: true,
+        data: permissions
+      });
+    } catch (error) {
+      logger.error('Error fetching RBAC permissions:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || 'Error fetching RBAC permissions'
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/tenants/:tenantId/rbac/permissions
+ * Create a custom tenant permission
+ */
+router.post(
+  '/:tenantId/rbac/permissions',
+  protect,
+  validateTenantAccess,
+  requireTenantPermission(['rbac:permission:manage']),
+  [
+    body('key').notEmpty().withMessage('Permission key is required'),
+    body('description').optional().isString()
+  ],
+  validateRequest,
+  async (req, res) => {
+    try {
+      const permission = await createTenantPermission({
+        tenantId: req.params.tenantId,
+        key: req.body.key,
+        description: req.body.description,
+        actorUserId: req.user.id
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: 'Permission created successfully',
+        data: permission
+      });
+    } catch (error) {
+      logger.error('Error creating RBAC permission:', error);
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Error creating RBAC permission'
+      });
+    }
+  }
+);
+
+/**
+ * PUT /api/tenants/:tenantId/members/:userId/rbac-roles
+ * Assign RBAC role IDs to a tenant member
+ */
+router.put(
+  '/:tenantId/members/:userId/rbac-roles',
+  protect,
+  validateTenantAccess,
+  requireTenantPermission(['rbac:assign']),
+  [
+    body('roleIds').isArray().withMessage('roleIds must be an array')
+  ],
+  validateRequest,
+  async (req, res) => {
+    try {
+      const member = await getMemberByUserId(req.params.tenantId, req.params.userId);
+      if (!member) {
+        return res.status(404).json({
+          success: false,
+          message: 'Tenant member not found'
+        });
+      }
+
+      await assignRolesToMember({
+        tenantId: req.params.tenantId,
+        tenantMemberId: member.id,
+        roleIds: req.body.roleIds || [],
+        actorUserId: req.user.id
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Member roles updated successfully'
+      });
+    } catch (error) {
+      logger.error('Error assigning member roles:', error);
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Error assigning member roles'
+      });
+    }
+  }
+);
+
+/**
+ * PUT /api/tenants/:tenantId/members/:userId/permissions
+ * Set custom permissions for a tenant member
+ */
+router.put(
+  '/:tenantId/members/:userId/permissions',
+  protect,
+  validateTenantAccess,
+  requireTenantPermission(['rbac:assign']),
+  [
+    body('permissions').isArray().withMessage('permissions must be an array')
+  ],
+  validateRequest,
+  async (req, res) => {
+    try {
+      const member = await getMemberByUserId(req.params.tenantId, req.params.userId);
+      if (!member) {
+        return res.status(404).json({
+          success: false,
+          message: 'Tenant member not found'
+        });
+      }
+
+      const updatedPermissions = await setMemberCustomPermissions({
+        tenantId: req.params.tenantId,
+        tenantMemberId: member.id,
+        permissions: req.body.permissions || [],
+        actorUserId: req.user.id
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Member custom permissions updated successfully',
+        data: {
+          permissions: updatedPermissions
+        }
+      });
+    } catch (error) {
+      logger.error('Error updating member custom permissions:', error);
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Error updating member permissions'
+      });
+    }
+  }
+);
 
 /**
  * GET /api/tenants/:tenantId/features

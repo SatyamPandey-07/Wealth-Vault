@@ -8,6 +8,7 @@
 import { eq, and } from 'drizzle-orm';
 import db from '../config/db.js';
 import { tenants, tenantMembers, users } from '../db/schema.js';
+import { getMemberAuthorizationContext, initializeTenantRbac } from '../services/rbacService.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -143,6 +144,21 @@ export const validateTenantAccess = async (req, res, next) => {
       joinedAt: membership.joinedAt
     };
 
+    await initializeTenantRbac(tenant.id, req.user.id, membership.id);
+
+    const authorization = await getMemberAuthorizationContext(tenant.id, membership.id);
+    req.authorization = {
+      ...authorization,
+      hasPermission: (permissionKey) => {
+        const normalizedKey = String(permissionKey || '').trim().toLowerCase();
+        if (!normalizedKey) {
+          return false;
+        }
+
+        return authorization.hasWildcard || authorization.permissions.includes(normalizedKey);
+      }
+    };
+
     next();
   } catch (error) {
     logger.error('Tenant validation error:', error);
@@ -178,6 +194,52 @@ export const requireTenantRole = (allowedRoles = []) => {
         success: false,
         message: `This action requires one of the following roles: ${allowedRoles.join(', ')}`,
         code: 'INSUFFICIENT_ROLE'
+      });
+    }
+
+    next();
+  };
+};
+
+/**
+ * Require one or more RBAC permissions for tenant-scoped routes
+ */
+export const requireTenantPermission = (requiredPermissions = [], mode = 'any') => {
+  const permissionList = Array.isArray(requiredPermissions) ? requiredPermissions : [requiredPermissions];
+
+  return (req, res, next) => {
+    if (!req.authorization) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authorization context not found',
+        code: 'NO_AUTHORIZATION_CONTEXT'
+      });
+    }
+
+    const normalizedRequired = permissionList
+      .map((permissionKey) => String(permissionKey || '').trim().toLowerCase())
+      .filter(Boolean);
+
+    if (normalizedRequired.length === 0) {
+      return next();
+    }
+
+    const checks = normalizedRequired.map((permissionKey) => req.authorization.hasPermission(permissionKey));
+    const isAllowed = mode === 'all' ? checks.every(Boolean) : checks.some(Boolean);
+
+    if (!isAllowed) {
+      logger.warn('Permission denied for tenant action', {
+        userId: req.user?.id,
+        tenantId: req.tenant?.id,
+        requiredPermissions: normalizedRequired,
+        grantedPermissions: req.authorization.permissions
+      });
+
+      return res.status(403).json({
+        success: false,
+        message: 'Insufficient permissions for this action',
+        code: 'INSUFFICIENT_PERMISSION',
+        requiredPermissions: normalizedRequired
       });
     }
 
@@ -225,6 +287,7 @@ export const getTenantRateLimitKey = (req) => {
 export default {
   validateTenantAccess,
   requireTenantRole,
+  requireTenantPermission,
   extractTenantId,
   getTenantFilter,
   validateTenantDataOwnership,

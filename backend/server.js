@@ -32,6 +32,7 @@ import geminiRouter from "./routes/gemini.js";
 import analyticsRoutes from "./routes/analytics.js";
 import healthRoutes from "./routes/health.js";
 import performanceRoutes from "./routes/performance.js";
+import tenantRoutes from "./routes/tenants.js";
 
 // Load environment variables
 dotenv.config();
@@ -171,6 +172,7 @@ app.use("/api/analytics", userLimiter, analyticsRoutes);
 app.use("/api/gemini", aiLimiter, geminiRouter);
 app.use("/api/health", healthRoutes);
 app.use("/api/performance", userLimiter, performanceRoutes);
+app.use("/api/tenants", userLimiter, tenantRoutes);
 
 // Secur fil servr for uploddd fils
 app.use("/uploads", createFileServerRoute());
