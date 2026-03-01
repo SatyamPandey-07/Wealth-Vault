@@ -40,6 +40,7 @@ import {
 } from "../utils/mfa.js";
 import securityService from "../services/securityService.js";
 import { logAudit, AuditActions, ResourceTypes } from "../middleware/auditLogger.js";
+import { sendEmailVerification } from "../services/emailVerificationService.js";
 
 // Get __dirname equivalent for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -283,7 +284,7 @@ router.post(
     const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Create user
+    // Create user (inactive until email verified)
     const [newUser] = await db
       .insert(users)
       .values({
@@ -294,6 +295,7 @@ router.post(
         currency: currency || "USD",
         monthlyIncome: monthlyIncome || "0",
         monthlyBudget: monthlyBudget || "0",
+        isActive: false, // User inactive until email verified
       })
       .returning();
 
@@ -313,13 +315,13 @@ router.post(
 
     await db.insert(categories).values(defaultCategoriesData);
 
-    // Create device session with enhanced tokens
-    const deviceInfo = getDeviceInfo(req);
-    const ipAddress = req.ip || req.connection.remoteAddress;
-    const tokens = await createDeviceSession(newUser.id, deviceInfo, ipAddress);
-
-    // Update activity for Dead Man's Switch
-    await successionService.trackActivity(newUser.id, 'register');
+    // Send email verification
+    try {
+      await sendEmailVerification(newUser.id);
+    } catch (emailError) {
+      console.error('Failed to send verification email:', emailError);
+      // Don't fail registration if email fails, but log it
+    }
 
     // Log successful registration
     logAudit(req, {
@@ -332,9 +334,15 @@ router.post(
     });
 
     return new ApiResponse(201, {
-      user: getPublicProfile(newUser),
-      ...tokens,
-    }, "User registered successfully").send(res);
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        firstName: newUser.firstName,
+        lastName: newUser.lastName,
+        emailVerified: false
+      },
+      requiresEmailVerification: true
+    }, "User registered successfully. Please check your email to verify your account.").send(res);
   })
 );
 
@@ -452,6 +460,16 @@ router.post(
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
+      });
+    }
+
+    // Check if email is verified
+    if (!user.emailVerified) {
+      return res.status(403).json({
+        success: false,
+        message: "Email not verified. Please check your email and verify your account before logging in.",
+        requiresEmailVerification: true,
+        email: user.email
       });
     }
 
@@ -574,6 +592,157 @@ router.post(
       ...tokens,
     }, "Login successful").send(res);
 
+  })
+);
+
+/**
+ * @swagger
+ * /auth/verify-email:
+ *   post:
+ *     summary: Verify user email with token
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - token
+ *             properties:
+ *               token:
+ *                 type: string
+ *                 description: Email verification token
+ *     responses:
+ *       200:
+ *         description: Email verified successfully
+ *       400:
+ *         description: Invalid or expired token
+ */
+router.post(
+  "/verify-email",
+  [
+    body("token")
+      .notEmpty()
+      .withMessage("Verification token is required"),
+  ],
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return next(new AppError(400, "Validation failed", errors.array()));
+    }
+
+    const { token } = req.body;
+
+    const { verifyEmail } = await import("../services/emailVerificationService.js");
+    const result = await verifyEmail(token);
+
+    if (!result.success) {
+      return next(new AppError(400, result.message));
+    }
+
+    // Activate the user account now that email is verified
+    await db
+      .update(users)
+      .set({ isActive: true, updatedAt: new Date() })
+      .where(eq(users.id, result.user.id));
+
+    // Log email verification
+    logAudit(req, {
+      userId: result.user.id,
+      action: AuditActions.AUTH_VERIFY_EMAIL,
+      resourceType: ResourceTypes.USER,
+      resourceId: result.user.id,
+      metadata: { email: result.user.email },
+      status: 'success',
+    });
+
+    return new ApiResponse(200, {
+      user: result.user,
+      emailVerified: true
+    }, "Email verified successfully. Your account is now active.").send(res);
+  })
+);
+
+/**
+ * @swagger
+ * /auth/resend-verification:
+ *   post:
+ *     summary: Resend email verification
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 description: User's email address
+ *     responses:
+ *       200:
+ *         description: Verification email sent
+ *       400:
+ *         description: Email already verified or user not found
+ *       429:
+ *         $ref: '#/components/responses/RateLimitError'
+ */
+router.post(
+  "/resend-verification",
+  process.env.NODE_ENV === 'test' ? [] : authLimiter,
+  [
+    body("email")
+      .isEmail()
+      .withMessage("Please provide a valid email")
+      .normalizeEmail(),
+  ],
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return next(new AppError(400, "Validation failed", errors.array()));
+    }
+
+    const { email } = req.body;
+
+    // Find user by email
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email));
+
+    if (!user) {
+      // Don't reveal if email exists or not for security
+      return new ApiResponse(200, {}, "If the email exists in our system, a verification email has been sent.").send(res);
+    }
+
+    if (user.emailVerified) {
+      return next(new AppError(400, "Email is already verified"));
+    }
+
+    // Send verification email (as reminder)
+    const { sendEmailVerification } = await import("../services/emailVerificationService.js");
+    try {
+      await sendEmailVerification(user.id, true); // true for reminder
+    } catch (emailError) {
+      console.error('Failed to send verification reminder:', emailError);
+      return next(new AppError(500, "Failed to send verification email"));
+    }
+
+    // Log resend verification
+    logAudit(req, {
+      userId: user.id,
+      action: AuditActions.AUTH_RESEND_VERIFICATION,
+      resourceType: ResourceTypes.USER,
+      resourceId: user.id,
+      metadata: { email: user.email },
+      status: 'success',
+    });
+
+    return new ApiResponse(200, {}, "Verification email sent successfully.").send(res);
   })
 );
 

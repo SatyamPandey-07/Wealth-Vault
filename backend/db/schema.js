@@ -159,6 +159,9 @@ export const users = pgTable('users', {
     lastLogin: timestamp('last_login').defaultNow(),
     mfaEnabled: boolean('mfa_enabled').default(false),
     mfaSecret: text('mfa_secret'),
+    emailVerified: boolean('email_verified').default(false),
+    emailVerificationToken: text('email_verification_token'),
+    emailVerificationExpires: timestamp('email_verification_expires'),
     preferences: jsonb('preferences').default({
         notifications: { email: true, push: true, sms: false },
         theme: 'auto',
