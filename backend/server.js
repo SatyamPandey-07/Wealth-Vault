@@ -1,5 +1,5 @@
 import express from "express";
-
+import chatbotRoutes from "./routes/chatbot.routes.js";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -12,20 +12,26 @@ import { swaggerSpec } from "./config/swagger.js";
 import { connectRedis, getConnectionState, isRedisAvailable, disconnectRedis } from "./config/redis.js";
 import { connectDatabase, disconnectDatabase, getDatabaseState, isDatabaseHealthy } from "./config/db.js";
 import { scheduleCleanup } from "./jobs/tokenCleanup.js";
+import { scheduleRatesSync, runImmediateSync } from "./jobs/syncRates.js";
 import { initializeUploads } from "./middleware/fileUpload.js";
 import outboxDispatcher from "./jobs/outboxDispatcher.js";
 import certificateRotation from "./jobs/certificateRotation.js";
 import "./services/sagaDefinitions.js"; // Register saga definitions
 import { createFileServerRoute } from "./middleware/secureFileServer.js";
+import {
+  generalLimiter,
+  aiLimiter,
+  userLimiter,
+} from "./middleware/rateLimiter.js";
 import { requestIdMiddleware, requestLogger, errorLogger, analyticsMiddleware } from "./middleware/requestLogger.js";
 import { auditLogger } from "./middleware/auditLogger.js";
 import { performanceMiddleware } from "./services/performanceMonitor.js";
 import { logInfo, logError } from "./utils/logger.js";
-import { generalLimiter, aiLimiter, userLimiter } from "./middleware/rateLimiter.js";
 import { sanitizeInput, sanitizeMongo } from "./middleware/sanitizer.js";
 import { responseWrapper } from "./middleware/responseWrapper.js";
 import { paginationMiddleware } from "./utils/pagination.js";
-import { errorHandler, notFound } from "./middleware/errorHandler.js";
+import { notFound } from "./middleware/errorHandler.js";
+import { globalErrorHandler } from "./middleware/globalErrorHandler.js";
 
 // Import routes
 import authRoutes from "./routes/auth.js";
@@ -41,12 +47,10 @@ import tenantRoutes from "./routes/tenants.js";
 import auditRoutes from "./routes/audit.js";
 import servicesRoutes from "./routes/services.js";
 import dbRouterRoutes from "./routes/dbRouter.js";
-import authorizationRoutes from "./routes/authorization.js";
 
 // Import DB Router
 import { initializeDBRouter } from "./services/dbRouterService.js";
 import { attachDBConnection, dbRoutingErrorHandler } from "./middleware/dbRouting.js";
-import policyEngineService from "./services/policyEngineService.js";
 
 // Load environment variables
 dotenv.config();
@@ -377,3 +381,7 @@ process.on('SIGINT', shutdown);
 // Start the server
 startServer();
 
+  precomputePathsJob.start();
+}
+
+export default app;
