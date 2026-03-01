@@ -46,12 +46,10 @@ import tenantRoutes from "./routes/tenants.js";
 import auditRoutes from "./routes/audit.js";
 import servicesRoutes from "./routes/services.js";
 import dbRouterRoutes from "./routes/dbRouter.js";
-import authorizationRoutes from "./routes/authorization.js";
 
 // Import DB Router
 import { initializeDBRouter } from "./services/dbRouterService.js";
 import { attachDBConnection, dbRoutingErrorHandler } from "./middleware/dbRouting.js";
-import policyEngineService from "./services/policyEngineService.js";
 
 // Load environment variables
 dotenv.config();
@@ -63,15 +61,6 @@ initializeDBRouter()
   })
   .catch(err => {
     console.warn('⚠️ DB Router initialization failed, using primary only:', err.message);
-  });
-
-// Initialize Policy Engine (policy-as-code authorization)
-policyEngineService.initialize()
-  .then(() => {
-    console.log('🛡️ Policy Engine initialized (authorization centralized)');
-  })
-  .catch(err => {
-    console.warn('⚠️ Policy Engine initialization failed:', err.message);
   });
 
 // Initialize Redis connection
@@ -254,7 +243,6 @@ app.use("/api/performance", userLimiter, performanceRoutes);
 app.use("/api/tenants", userLimiter, tenantRoutes);
 app.use("/api/audit", userLimiter, auditRoutes);
 app.use("/api/db-router", userLimiter, dbRouterRoutes);
-app.use("/api/authorization", userLimiter, authorizationRoutes);
 
 
 // Family Financial Planning routes
