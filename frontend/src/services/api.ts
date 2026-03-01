@@ -1006,6 +1006,53 @@ export const analyticsAPI = {
 
     return response;
   },
+
+  // Get smart spending analysis with AI-powered insights
+  getSmartSpendingAnalysis: async (params?: {
+    timeRange?: '30days' | '90days' | '6months' | '1year';
+  }) => {
+    return apiRequest<{
+      success: boolean;
+      data: {
+        status: 'success' | 'insufficient_data';
+        patternAnalysis: {
+          patterns: {
+            safe: { score: number; indicators: string[]; transactions: string[] };
+            impulsive: { score: number; indicators: string[]; transactions: string[] };
+            anxious: { score: number; indicators: string[]; transactions: string[] };
+          };
+          dominantPattern: string;
+          dominantScore: number;
+          patternDistribution: { safe: number; impulsive: number; anxious: number };
+        };
+        behavioralInsights: Array<{
+          type: string;
+          title: string;
+          description: string;
+          severity: 'low' | 'medium' | 'high';
+          data: any;
+        }>;
+        riskAssessment: {
+          riskLevel: 'low' | 'medium' | 'high';
+          riskFactors: string[];
+          riskScore: number;
+          recommendations: string[];
+        };
+        recommendations: Array<{
+          type: string;
+          priority: 'low' | 'medium' | 'high';
+          title: string;
+          description: string;
+          actions: string[];
+        }>;
+        totalTransactions: number;
+        totalAmount: number;
+      };
+    }>('/analytics/smart-spending-analysis', {
+      method: 'GET',
+      params,
+    });
+  },
 };
 
 // Budget Alerts API
@@ -1782,6 +1829,7 @@ const gamificationAPI = {
 };
 
 // Export all APIs
+export { api };
 export default {
   auth: authAPI,
   expenses: expensesAPI,
