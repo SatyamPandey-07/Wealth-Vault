@@ -1782,6 +1782,7 @@ const gamificationAPI = {
 };
 
 // Export all APIs
+export { api };
 export default {
   auth: authAPI,
   expenses: expensesAPI,
