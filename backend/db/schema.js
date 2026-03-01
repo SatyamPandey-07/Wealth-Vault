@@ -11,6 +11,7 @@ export const rbacEntityTypeEnum = pgEnum('rbac_entity_type', ['role', 'permissio
 // Enums for outbox and saga
 export const outboxEventStatusEnum = pgEnum('outbox_event_status', ['pending', 'processing', 'published', 'failed', 'dead_letter']);
 export const sagaStatusEnum = pgEnum('saga_status', ['started', 'step_completed', 'compensating', 'completed', 'failed']);
+export const distributedTxStatusEnum = pgEnum('distributed_tx_status', ['started', 'prepared', 'committed', 'aborted', 'failed', 'timed_out']);
 
 // Enums for service authentication
 export const serviceStatusEnum = pgEnum('service_status', ['active', 'suspended', 'revoked']);
@@ -441,6 +442,45 @@ export const sagaStepExecutions = pgTable('saga_step_executions', {
     completedAt: timestamp('completed_at'),
     compensatedAt: timestamp('compensated_at'),
     createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Idempotency Keys Table - Prevent duplicate financial operation execution
+export const idempotencyKeys = pgTable('idempotency_keys', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    operation: text('operation').notNull(),
+    idempotencyKey: text('idempotency_key').notNull().unique(),
+    requestHash: text('request_hash'),
+    status: text('status').default('processing'), // processing, completed, failed
+    responseCode: integer('response_code'),
+    responseBody: jsonb('response_body').default({}),
+    resourceType: text('resource_type'),
+    resourceId: uuid('resource_id'),
+    expiresAt: timestamp('expires_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Distributed Transaction Logs - Track 2PC-like lifecycle for financial operations
+export const distributedTransactionLogs = pgTable('distributed_transaction_logs', {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    transactionType: text('transaction_type').notNull(),
+    operationKey: text('operation_key').notNull().unique(),
+    sagaInstanceId: uuid('saga_instance_id').references(() => sagaInstances.id, { onDelete: 'set null' }),
+    status: distributedTxStatusEnum('status').default('started'),
+    phase: text('phase').default('init'), // init, prepare, commit, abort
+    timeoutAt: timestamp('timeout_at'),
+    lastError: text('last_error'),
+    payload: jsonb('payload').default({}),
+    result: jsonb('result').default({}),
+    recoveryRequired: boolean('recovery_required').default(false),
+    startedAt: timestamp('started_at').defaultNow(),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 // Service Identities Table - Machine identities for internal services
@@ -1308,6 +1348,32 @@ export const sagaInstancesRelations = relations(sagaInstances, ({ one, many }) =
 export const sagaStepExecutionsRelations = relations(sagaStepExecutions, ({ one }) => ({
     sagaInstance: one(sagaInstances, {
         fields: [sagaStepExecutions.sagaInstanceId],
+        references: [sagaInstances.id],
+    }),
+}));
+
+export const idempotencyKeysRelations = relations(idempotencyKeys, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [idempotencyKeys.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [idempotencyKeys.userId],
+        references: [users.id],
+    }),
+}));
+
+export const distributedTransactionLogsRelations = relations(distributedTransactionLogs, ({ one }) => ({
+    tenant: one(tenants, {
+        fields: [distributedTransactionLogs.tenantId],
+        references: [tenants.id],
+    }),
+    user: one(users, {
+        fields: [distributedTransactionLogs.userId],
+        references: [users.id],
+    }),
+    sagaInstance: one(sagaInstances, {
+        fields: [distributedTransactionLogs.sagaInstanceId],
         references: [sagaInstances.id],
     }),
 }));

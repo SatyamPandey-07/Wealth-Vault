@@ -15,7 +15,7 @@ import { requireTenantRole } from '../middleware/tenantMiddleware.js';
 import certificateService from '../services/certificateService.js';
 import serviceJWTService from '../services/serviceJWTService.js';
 import certificateRotation from '../jobs/certificateRotation.js';
-import { db } from '../config/db.js';
+import db from '../config/db.js';
 import { serviceIdentities, serviceCertificates, serviceAuthLogs } from '../db/schema.js';
 import { eq, desc } from 'drizzle-orm';
 import logger from '../utils/logger.js';

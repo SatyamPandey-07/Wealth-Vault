@@ -1,4 +1,4 @@
-import { db } from '../config/db.js';
+import db from '../config/db.js';
 import { outboxEvents } from '../db/schema.js';
 import { eq, and, or, lte, isNull, gt, ne } from 'drizzle-orm';
 import logger from '../utils/logger.js';
