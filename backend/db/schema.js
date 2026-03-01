@@ -9,7 +9,7 @@ export const tenantRoleEnum = pgEnum('tenant_role', ['owner', 'admin', 'manager'
 export const rbacEntityTypeEnum = pgEnum('rbac_entity_type', ['role', 'permission', 'member_role', 'member_permission']);
 
 // Enums for outbox and saga
-export const outboxEventStatusEnum = pgEnum('outbox_event_status', ['pending', 'processing', 'published', 'failed']);
+export const outboxEventStatusEnum = pgEnum('outbox_event_status', ['pending', 'processing', 'published', 'failed', 'dead_letter']);
 export const sagaStatusEnum = pgEnum('saga_status', ['started', 'step_completed', 'compensating', 'completed', 'failed']);
 
 // Enums for service authentication
@@ -395,6 +395,10 @@ export const outboxEvents = pgTable('outbox_events', {
     lastError: text('last_error'),
     processedAt: timestamp('processed_at'),
     publishedAt: timestamp('published_at'),
+    // Row-level locking fields to prevent duplicate processing
+    processingBy: text('processing_by'), // Worker ID processing this event
+    processingStartedAt: timestamp('processing_started_at'), // When processing started (for heartbeat timeout)
+    lastHeartbeat: timestamp('last_heartbeat'), // Last heartbeat from processing worker
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
 });

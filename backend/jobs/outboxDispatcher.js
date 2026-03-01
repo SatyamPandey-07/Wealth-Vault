@@ -133,7 +133,11 @@ class OutboxDispatcher extends EventEmitter {
         }
 
         try {
-            const events = await outboxService.getPendingEvents(this.batchSize);
+            // Clean up stale processing events before fetching new ones
+            await outboxService.cleanupStaleProcessing();
+
+            // Use row-level locking to prevent duplicate processing
+            const events = await outboxService.getPendingEventsWithLocking(this.batchSize);
 
             if (events.length === 0) {
                 return;
@@ -213,9 +217,24 @@ class OutboxDispatcher extends EventEmitter {
      * @private
      */
     async processEvent(event) {
+        let heartbeatInterval = null;
+        
         try {
-            // Mark as processing
+            // Mark as processing (atomic claim with row locking)
             await outboxService.markAsProcessing(event.id);
+
+            // Start heartbeat mechanism every 30 seconds
+            // This prevents the event from being considered stuck if processing takes a long time
+            heartbeatInterval = setInterval(async () => {
+                try {
+                    await outboxService.updateHeartbeat(event.id);
+                } catch (error) {
+                    logger.warn('Failed to send heartbeat for event', {
+                        eventId: event.id,
+                        error: error.message
+                    });
+                }
+            }, 30000); // Send heartbeat every 30 seconds (timeout is 5 minutes)
 
             // Get handlers for this event type
             const handlers = this.getHandlers(event.eventType);
@@ -263,7 +282,7 @@ class OutboxDispatcher extends EventEmitter {
 
             await outboxService.markAsFailed(event.id, error.message);
 
-            // Check if max retries exceeded
+            // Check if this will be moved to dead letter
             if (event.retryCount >= event.maxRetries) {
                 this.emit('event:dead-letter', {
                     eventId: event.id,
@@ -283,6 +302,11 @@ class OutboxDispatcher extends EventEmitter {
                     eventType: event.eventType,
                     retryCount: event.retryCount + 1
                 });
+            }
+        } finally {
+            // Always clear heartbeat interval
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
             }
         }
     }
